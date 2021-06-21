@@ -16,5 +16,20 @@ CHIP PC {
     OUT out[16];
 
     PARTS:
-    // Put your code here:
+    // Only update state if one of the three control bits is asserted.
+    Or(a=load, b=inc, out=x);
+    Or(a=x, b=reset, out=update);
+
+    Register(in=loop, load=update, out=r1, out=out);
+
+    Add16(a=r1, b[0]=true, out=add1);
+    // Inc, else retain current state.
+    Mux16(a=in, b=add1, sel=inc, out=mux1);
+    // Load, else mux1.
+    Mux16(a=mux1, b=in, sel=load, out=mux2);
+    // Reset, else mux2.
+    Mux16(a=mux2, b[0]=false, sel=reset, out=mux3);
+
+    // Keep value unchanged unless an update control bit is asserted.
+    Mux16(a=r1, b=mux3, sel=update, out=loop);
 }
