@@ -39,5 +39,63 @@ CHIP CPU {
         pc[15];          // address of next instruction
 
     PARTS:
-    // Put your code here:
+
+    Not(in=instruction[15], out=a-cmd);
+    Not(in=a-cmd,           out=c-cmd);
+
+    // Select A instruction or ALU output for A register.
+    Mux16(a=alu-out, b=instruction, sel=a-cmd, out=a-reg-input);
+
+    // Load A if cmd destination is A or it's an A cmd.
+    Or(a=instruction[5], b=a-cmd, out=load-a);
+
+    ARegister(in=a-reg-input, load=load-a, out=a-reg, out[0..14]=addressM);
+    DRegister(in=alu-out, load=instruction[4], out=x);
+
+    // Select A or M as y.
+    Mux16(a=a-reg, b=inM, sel=instruction[12], out=y);
+
+    ALU(
+      x=x,
+      y=y,
+      zx=instruction[11],
+      nx=instruction[10],
+      zy=instruction[9],
+      ny=instruction[8],
+      f=instruction[7],
+      no=instruction[6],
+      out=alu-out, out=outM,
+      zr=eq,              // If out==0 zr=1 else zr=0
+      ng=lt               // If out<0  ng=1 else ng=0
+    );
+
+    // Write memory if bit 3 is set.
+    And(a=c-cmd, b=instruction[3], out=writeM);
+
+    // Comparators.
+    Not(in=eq,      out=ne);
+    Not(in=lt,      out=ge);
+    And(a=ne, b=ge, out=gt);
+    Not(in=gt,      out=le);
+
+    // Jump conditions.
+    And(a=instruction[0], b=gt, out=jmp-gt);
+    And(a=instruction[1], b=eq, out=jmp-eq);
+    And(a=instruction[2], b=lt, out=jmp-lt);
+
+    // Do jump if any condition matches.
+    // Always jump when instruction[0..2] = 0b111.
+    // Never jump when instruction[0..2] = 0b000.
+    Or(a=jmp-gt, b=jmp-eq, out=jmp-ge);
+    Or(a=jmp-ge, b=jmp-lt, out=jmp);
+    And(a=c-cmd, b=jmp, out=load-jmp);
+
+    PC(
+      in=a-reg,
+      load=load-jmp,
+      inc=true,
+      reset=reset,
+      out[0..14]=pc
+    );
 }
+
