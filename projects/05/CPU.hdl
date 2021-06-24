@@ -46,11 +46,18 @@ CHIP CPU {
     // Select A instruction or ALU output for A register.
     Mux16(a=alu-out, b=instruction, sel=a-cmd, out=a-reg-input);
 
-    // Load A if cmd destination is A or it's an A cmd.
-    Or(a=instruction[5], b=a-cmd, out=load-a);
+    // Dst bit 5: Write A, if C cmd.
+    And(a=instruction[5], b=c-cmd, out=writeA);
+    Or(a=writeA, b=a-cmd, out=load-a);
+
+    // Dst bit 4: Write D, if C cmd.
+    And(a=instruction[4], b=c-cmd, out=writeD);
+
+    // Dst bit 3: Write Mem, if C cmd.
+    And(a=instruction[3], b=c-cmd, out=writeM);
 
     ARegister(in=a-reg-input, load=load-a, out=a-reg, out[0..14]=addressM);
-    DRegister(in=alu-out, load=instruction[4], out=x);
+    DRegister(in=alu-out, load=writeD, out=x);
 
     // Select A or M as y.
     Mux16(a=a-reg, b=inM, sel=instruction[12], out=y);
@@ -68,9 +75,6 @@ CHIP CPU {
       zr=eq,              // If out==0 zr=1 else zr=0
       ng=lt               // If out<0  ng=1 else ng=0
     );
-
-    // Write memory if bit 3 is set.
-    And(a=c-cmd, b=instruction[3], out=writeM);
 
     // Comparators.
     Not(in=eq,      out=ne);

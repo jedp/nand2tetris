@@ -31,11 +31,11 @@ CHIP Computer {
       reset=reset,
       outM=toM,
       writeM=writeM,
-      addressM[0..13]=addressM,
+      addressM[0..14]=addressM,
       pc=pc
     );
 
-    RAM16K(
+    Memory(
       in=toM,
       load=writeM,
       address=addressM,
