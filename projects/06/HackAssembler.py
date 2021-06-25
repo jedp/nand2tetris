@@ -291,27 +291,27 @@ class Assembler:
         'D-1': '0001110',
         'A-1': '0110010',
         'M-1': '1110010',
-        'D+A': '0000010',
-        'D+M': '1000010',
+        'D+A': '0000010', 'A+D': '0000010',
+        'D+M': '1000010', 'M+D': '1000010',
         'D-A': '0010011',
         'D-M': '1010011',
         'A-D': '0000111',
         'M-D': '1000111',
-        'D&A': '0000000',
-        'D&M': '1000000',
-        'D|A': '0010101',
-        'D|M': '1010101'
+        'D&A': '0000000', 'A&D': '0000000',
+        'D&M': '1000000', 'M&D': '1000000',
+        'D|A': '0010101', 'A|D': '0010101',
+        'D|M': '1010101', 'M|D': '1010101'
     }
 
     DEST = {
         None:  '000',
         'M':   '001',
         'D':   '010',
-        'DM':  '011',
+        'DM':  '011', 'MD':  '011',
         'A':   '100',
-        'AM':  '101',
-        'AD':  '110',
-        'ADM': '111'
+        'AM':  '101', 'MA':  '101',
+        'AD':  '110', 'DA':  '110',
+        'ADM': '111', 'AMD': '111', 'MAD': '111', 'MDA': '111', 'DAM': '111', 'DMA': '111'
     }
 
     JMP = {
@@ -403,6 +403,12 @@ class Assembler:
                 except KeyError as e:
                     if line.comp not in self.COMP:
                         self.errors.append(f'Unknown comp "{line.comp}" at {line.line}')
+                    elif line.dest not in self.DEST:
+                        self.errors.append(f'Unknown dest "{line.dest}" at {line.line}')
+                    elif line.jmp not in self.JMP:
+                        self.errors.append(f'Unknown jmp "{line.jmp}" at {line.line}')
+                    else:
+                        raise e
 
             elif isType(line, Err):
                 self.errors.append(line.msg)
