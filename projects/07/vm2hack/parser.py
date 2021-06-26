@@ -33,18 +33,23 @@ segments = (
     'temp'
 )
 
-Cmd = namedtuple('Command', 'line type arg1 arg2')
+# src = original source code line
+# type= command type
+# arg1 = arg1, or command name if arithmetic, or None
+# arg2 = arg2 or None
+Cmd = namedtuple('Command', 'line src type arg1 arg2')
 Err = namedtuple('Command', 'line type msg')
 
 class Parser:
     def __init__(self, text):
         self.text = text
         self.line = 0
+        self.lines = self.text.splitlines()
         self.cmds = []
         self.errs = []
 
     def parse(self):
-        for line in self.text.splitlines():
+        for line in self.lines:
             self.parseTokens(self.tokenizeLine(line))
             self.line += 1
 
@@ -58,7 +63,7 @@ class Parser:
         return line.split("//")[0].split()
 
     def makeCmd(self, type, arg1=None, arg2=None):
-        return Cmd(self.line, type, arg1, arg2)
+        return Cmd(self.line, self.lines[self.line], type, arg1, arg2)
 
     def parseTokens(self, tokens):
         if not tokens:

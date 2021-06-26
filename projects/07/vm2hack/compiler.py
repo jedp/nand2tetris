@@ -34,6 +34,9 @@ class Compiler:
         self.input = Parser(text).parse()
         self.config = config
         self.text = []
+        self.subs = {}
+        self.ret = 0
+        self.labels = set("__STOP")
 
     def compile(self):
         if self.input['errors']:
@@ -42,17 +45,35 @@ class Compiler:
                 print("Line {}: {}".format(err.line, err.msg))
             return ""
 
+        # Init variables and environment.
         self.cg_init()
 
-        for line in self.input['commands']:
-            self.cg(line)
+        # Translate input.
+        for cmd in self.input['commands']:
+            # Print original VM command as a comment.
+            self.asm('// ' + cmd.src)
+            self.cg(cmd)
 
+        # Add the stop loop.
+        self.asm("// *** STOP loop ***")
         self.cg_stop()
+
+        # Add all the subroutines that were generated.
+        self.asm('// *** Subroutines ***')
+        for label in self.subs:
+            self.text += self.subs[label]
+        self.asm("// *** End of file ***")
 
         return '\n'.join(self.text)
 
     def asm(self, text):
         self.text.append(text)
+
+    def sub(self, text):
+        """
+        Same as text, but goes at the end of the program for legibility.
+        """
+        self.subs.append(text)
 
     def cg(self, cmd):
         if cmd.type == 'Arithmetic':
@@ -86,21 +107,44 @@ class Compiler:
         self.asm("M=M+1")
 
     def cg_add(self, cmd):
-        # SP--
-        self.asm("@SP")
-        self.asm("M=M-1")
-        # D = MEM[SP]
-        self.asm("@SP")
-        self.asm("A=M")
-        self.asm("D=M")
-        # SP--
-        self.asm("@SP")
-        self.asm("M=M-1")
-        # A = MEM[SP]
-        self.asm("@SP")
-        self.asm("A=M")
-        # D = Add
-        self.asm("D=D+M")
+        ret = f"__RET_{self.ret}"
+        self.asm(f"@{ret}")
+        self.asm("D=A")
+        self.asm("@R15")
+        self.asm("M=D")
+        self.asm("@__ADD")
+        self.asm("0;JMP")
+        self.asm(f"({ret})")
+
+        if "__ADD" not in self.subs:
+            sub = []
+            sub.append("// *** Subroutine: Add ***")
+            sub.append("// *** a = pop; b = pop; d = a + b; push d")
+            sub.append("// D = MEM[--SP]")
+            sub.append("(__ADD)")
+            sub.append("@SP")
+            sub.append("M=M-1")
+            sub.append("@SP")
+            sub.append("A=M")
+            sub.append("D=M")
+            sub.append("// A = MEM[--SP]")
+            sub.append("@SP")
+            sub.append("M=M-1")
+            sub.append("@SP")
+            sub.append("A=M")
+            sub.append("// D = Add")
+            sub.append("D=D+M")
+            sub.append("// MEM[SP++] = D")
+            sub.append("@SP")
+            sub.append("A=M")
+            sub.append("M=D")
+            sub.append("@SP")
+            sub.append("M=M+1")
+            sub.append("// Return")
+            sub.append("@R15")
+            sub.append("A=M")
+            sub.append("0;JMP")
+            self.subs["__ADD"] = sub
 
     def cg_init(self):
         # Init SP
@@ -110,7 +154,8 @@ class Compiler:
         self.asm("M=D")
 
     def cg_stop(self):
-        self.asm("@{}".format(len(self.text)))
+        self.asm("(__STOP)")
+        self.asm("@__STOP")
         self.asm("0;JEQ")
 
 
