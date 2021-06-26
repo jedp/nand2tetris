@@ -4,6 +4,14 @@ import sys
 from vm2hack.parser import Parser
 
 
+def unindent(text):
+    """
+    Unindent a multiline string up to and including the '|' character.
+    """
+    lines = text.strip().splitlines()
+    return '\n'.join([line.split('|')[1] for line in lines])
+
+
 class CompilerConfig:
     def __init__(self,
             sp=0,
@@ -61,7 +69,7 @@ class Compiler:
         # Add all the subroutines that were generated.
         self.asm('// *** Subroutines ***')
         for label in self.subs:
-            self.text += self.subs[label]
+            self.text += self.subs[label].splitlines()
         self.asm("// *** End of file ***")
 
         return '\n'.join(self.text)
@@ -95,120 +103,127 @@ class Compiler:
     def cg_push(self, cmd):
         if cmd.arg1 == 'constant':
             value = int(cmd.arg2)
-            # Put constant value in D
             self.asm(f"@{value}")
             self.asm("D=A")
 
         else:
             raise ValueError(r"Unhandled push command: {cmd}")
 
-        # Push D
-        self.asm("@SP")
-        self.asm("A=M")
-        self.asm("M=D")
-        # SP++
-        self.asm("@SP")
-        self.asm("M=M+1")
+        self.asm(unindent("""
+            |// MEM[SP++] = D
+            |@SP
+            |A=M
+            |M=D
+            |@SP
+            |M=M+1
+            """))
 
     def cg_call(self, label):
         ret = f"__RET_{self.ret}"
         self.ret += 1
-        self.asm(f"@{ret}")
-        self.asm("D=A")
-        self.asm("@R15")
-        self.asm("M=D")
-        self.asm(f"@{label}")
-        self.asm("0;JMP")
-        self.asm(f"({ret})")
+        self.asm(unindent(f"""
+            |@{ret}
+            |D=A
+            |@R15
+            |M=D
+            |@{label}
+            |0;JMP
+            |({ret})
+            """))
 
     def cg_add(self):
         if "__ADD" in self.subs:
             return
-        sub = []
-        sub.append("// *** Subroutine: Add ***")
-        sub.append("// *** a = pop; b = pop; d = a + b; push d")
-        sub.append("(__ADD)")
-        sub.append("// D = MEM[--SP]")
-        sub.append("@SP")
-        sub.append("M=M-1")
-        sub.append("@SP")
-        sub.append("A=M")
-        sub.append("D=M")
-        sub.append("// A = MEM[--SP]")
-        sub.append("@SP")
-        sub.append("M=M-1")
-        sub.append("@SP")
-        sub.append("A=M")
-        sub.append("// D = Add")
-        sub.append("D=D+M")
-        sub.append("// MEM[SP++] = D")
-        sub.append("@SP")
-        sub.append("A=M")
-        sub.append("M=D")
-        sub.append("@SP")
-        sub.append("M=M+1")
-        sub.append("// Return")
-        sub.append("@R15")
-        sub.append("A=M")
-        sub.append("0;JMP")
-        self.subs["__ADD"] = sub
+        self.subs["__ADD"] = unindent("""
+            |// *** Subroutine: Add ***
+            |// *** a = pop; b = pop; d = a + b; push d
+            |(__ADD)
+            |// D = MEM[--SP]
+            |@SP
+            |M=M-1
+            |@SP
+            |A=M
+            |D=M
+            |// A = MEM[--SP]
+            |@SP
+            |M=M-1
+            |@SP
+            |A=M
+            |// D = Add
+            |D=D+M
+            |// MEM[SP++] = D
+            |@SP
+            |A=M
+            |M=D
+            |@SP
+            |M=M+1
+            |// Return
+            |@R15
+            |A=M
+            |0;JMP
+            """)
 
     def cg_eq(self):
         if "__EQ" in self.subs:
             return
-        sub = []
-        sub.append("// *** Subroutine: Eq ***")
-        sub.append("// a = pop; b = pop; if a == b push -1 else push 0")
-        sub.append("(__EQ)")
-        sub.append("// D = MEM[--SP]")
-        sub.append("@SP")
-        sub.append("M=M-1")
-        sub.append("@SP")
-        sub.append("A=M")
-        sub.append("D=M")
-        sub.append("// A = MEM[--SP]")
-        sub.append("@SP")
-        sub.append("M=M-1")
-        sub.append("@SP")
-        sub.append("A=M")
-        sub.append("// If D-M == 0 means a == b")
-        sub.append("D=D-M")
-        sub.append("@__EQ_RESULT_EQ")
-        sub.append("D;JEQ")
-        sub.append("// a != b. Store 0 in temp0.")
-        sub.append("@{}".format(self.config.temp_base + 0))
-        sub.append("M=0")
-        sub.append("@__EQ_RETURN_RESULT")
-        sub.append("0;JMP")
-        sub.append("(__EQ_RESULT_EQ)")
-        sub.append("// a == b. Store -1 in temp0.")
-        sub.append("@{}".format(self.config.temp_base + 0))
-        sub.append("M=-1")
-        sub.append("(__EQ_RETURN_RESULT)")
-        sub.append("@{}".format(self.config.temp_base + 0))
-        sub.append("D=M")
-        sub.append("@SP")
-        sub.append("A=M")
-        sub.append("M=D")
-        sub.append("@SP")
-        sub.append("M=M+1")
-        sub.append("// Return")
-        sub.append("@R15")
-        sub.append("A=M")
-        sub.append("0;JMP")
-        self.subs["__EQ"] = sub
+        temp0 = self.config.temp_base
+        self.subs["__EQ"] = unindent(f"""
+            |// *** Subroutine: Eq ***
+            |// a = pop; b = pop; if a == b push -1 else push 0
+            |(__EQ)
+            |// D = MEM[--SP]
+            |@SP
+            |M=M-1
+            |@SP
+            |A=M
+            |D=M
+            |// A = MEM[--SP]
+            |@SP
+            |M=M-1
+            |@SP
+            |A=M
+            |// If D-M == 0 means a == b
+            |D=D-M
+            |@__EQ_RESULT_EQ
+            |D;JEQ
+            |// a != b. Store 0 in temp0.
+            |@{temp0}
+            |M=0
+            |@__EQ_RETURN_RESULT
+            |0;JMP
+            |(__EQ_RESULT_EQ)
+            |// a == b. Store -1 in temp0.
+            |@{temp0}
+            |M=-1
+            |(__EQ_RETURN_RESULT)
+            |@{temp0}
+            |D=M
+            |@SP
+            |A=M
+            |M=D
+            |@SP
+            |M=M+1
+            |// Return
+            |@R15
+            |A=M
+            |0;JMP
+            """)
 
     def cg_init(self):
-        # Init SP
-        self.asm("@{}".format(self.config.stack_base))
-        self.asm("D=A")
-        self.asm("@SP")
-        self.asm("M=D")
+        self.asm(unindent("""
+            |// SP = 0
+            |@{}
+            |D=A
+            |@SP
+            |M=D
+            """.format(self.config.stack_base)))
 
     def cg_stop(self):
-        self.asm("(__STOP)")
-        self.asm("@__STOP")
-        self.asm("0;JEQ")
+        self.asm(unindent("""
+            |(__STOP)
+            |@__STOP
+            |0;JEQ
+            """))
 
 
 if __name__ == '__main__':
