@@ -78,7 +78,11 @@ class Compiler:
     def cg(self, cmd):
         if cmd.type == 'Arithmetic':
             if cmd.arg1 == 'add':
-                return self.cg_add(cmd)
+                self.cg_add()
+                return self.cg_call('__ADD')
+            if cmd.arg1 == 'eq':
+                self.cg_eq()
+                return self.cg_call('__EQ')
 
         if cmd.type == 'Push':
             return self.cg_push(cmd)
@@ -106,45 +110,93 @@ class Compiler:
         self.asm("@SP")
         self.asm("M=M+1")
 
-    def cg_add(self, cmd):
+    def cg_call(self, label):
         ret = f"__RET_{self.ret}"
+        self.ret += 1
         self.asm(f"@{ret}")
         self.asm("D=A")
         self.asm("@R15")
         self.asm("M=D")
-        self.asm("@__ADD")
+        self.asm(f"@{label}")
         self.asm("0;JMP")
         self.asm(f"({ret})")
 
-        if "__ADD" not in self.subs:
-            sub = []
-            sub.append("// *** Subroutine: Add ***")
-            sub.append("// *** a = pop; b = pop; d = a + b; push d")
-            sub.append("// D = MEM[--SP]")
-            sub.append("(__ADD)")
-            sub.append("@SP")
-            sub.append("M=M-1")
-            sub.append("@SP")
-            sub.append("A=M")
-            sub.append("D=M")
-            sub.append("// A = MEM[--SP]")
-            sub.append("@SP")
-            sub.append("M=M-1")
-            sub.append("@SP")
-            sub.append("A=M")
-            sub.append("// D = Add")
-            sub.append("D=D+M")
-            sub.append("// MEM[SP++] = D")
-            sub.append("@SP")
-            sub.append("A=M")
-            sub.append("M=D")
-            sub.append("@SP")
-            sub.append("M=M+1")
-            sub.append("// Return")
-            sub.append("@R15")
-            sub.append("A=M")
-            sub.append("0;JMP")
-            self.subs["__ADD"] = sub
+    def cg_add(self):
+        if "__ADD" in self.subs:
+            return
+        sub = []
+        sub.append("// *** Subroutine: Add ***")
+        sub.append("// *** a = pop; b = pop; d = a + b; push d")
+        sub.append("(__ADD)")
+        sub.append("// D = MEM[--SP]")
+        sub.append("@SP")
+        sub.append("M=M-1")
+        sub.append("@SP")
+        sub.append("A=M")
+        sub.append("D=M")
+        sub.append("// A = MEM[--SP]")
+        sub.append("@SP")
+        sub.append("M=M-1")
+        sub.append("@SP")
+        sub.append("A=M")
+        sub.append("// D = Add")
+        sub.append("D=D+M")
+        sub.append("// MEM[SP++] = D")
+        sub.append("@SP")
+        sub.append("A=M")
+        sub.append("M=D")
+        sub.append("@SP")
+        sub.append("M=M+1")
+        sub.append("// Return")
+        sub.append("@R15")
+        sub.append("A=M")
+        sub.append("0;JMP")
+        self.subs["__ADD"] = sub
+
+    def cg_eq(self):
+        if "__EQ" in self.subs:
+            return
+        sub = []
+        sub.append("// *** Subroutine: Eq ***")
+        sub.append("// a = pop; b = pop; if a == b push -1 else push 0")
+        sub.append("(__EQ)")
+        sub.append("// D = MEM[--SP]")
+        sub.append("@SP")
+        sub.append("M=M-1")
+        sub.append("@SP")
+        sub.append("A=M")
+        sub.append("D=M")
+        sub.append("// A = MEM[--SP]")
+        sub.append("@SP")
+        sub.append("M=M-1")
+        sub.append("@SP")
+        sub.append("A=M")
+        sub.append("// If D-M == 0 means a == b")
+        sub.append("D=D-M")
+        sub.append("@__EQ_RESULT_EQ")
+        sub.append("D;JEQ")
+        sub.append("// a != b. Store 0 in temp0.")
+        sub.append("@{}".format(self.config.temp_base + 0))
+        sub.append("M=0")
+        sub.append("@__EQ_RETURN_RESULT")
+        sub.append("0;JMP")
+        sub.append("(__EQ_RESULT_EQ)")
+        sub.append("// a == b. Store -1 in temp0.")
+        sub.append("@{}".format(self.config.temp_base + 0))
+        sub.append("M=-1")
+        sub.append("(__EQ_RETURN_RESULT)")
+        sub.append("@{}".format(self.config.temp_base + 0))
+        sub.append("D=M")
+        sub.append("@SP")
+        sub.append("A=M")
+        sub.append("M=D")
+        sub.append("@SP")
+        sub.append("M=M+1")
+        sub.append("// Return")
+        sub.append("@R15")
+        sub.append("A=M")
+        sub.append("0;JMP")
+        self.subs["__EQ"] = sub
 
     def cg_init(self):
         # Init SP
