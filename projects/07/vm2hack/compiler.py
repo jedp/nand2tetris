@@ -91,6 +91,9 @@ class Compiler:
             if cmd.arg1 == 'eq':
                 self.cg_eq()
                 return self.cg_call('__EQ')
+            if cmd.arg1 == 'lt':
+                self.cg_lt()
+                return self.cg_call('__LT')
 
         if cmd.type == 'Push':
             return self.cg_push(cmd)
@@ -132,9 +135,9 @@ class Compiler:
             """))
 
     def cg_add(self):
-        if "__ADD" in self.subs:
+        if '__ADD' in self.subs:
             return
-        self.subs["__ADD"] = unindent("""
+        self.subs['__ADD'] = unindent("""
             |// *** Subroutine: Add ***
             |// *** a = pop; b = pop; d = a + b; push d
             |(__ADD)
@@ -164,12 +167,12 @@ class Compiler:
             """)
 
     def cg_eq(self):
-        if "__EQ" in self.subs:
+        if '__EQ' in self.subs:
             return
         temp0 = self.config.temp_base
-        self.subs["__EQ"] = unindent(f"""
+        self.subs['__EQ'] = unindent(f"""
             |// *** Subroutine: Eq ***
-            |// a = pop; b = pop; if a == b push -1 else push 0
+            |// y = pop; x = pop; if x == y push -1 else push 0
             |(__EQ)
             |// D = MEM[--SP]
             |@SP
@@ -182,20 +185,66 @@ class Compiler:
             |M=M-1
             |@SP
             |A=M
-            |// If D-M == 0 means a == b
+            |// If D-M == 0, then a == b
             |D=D-M
             |@__EQ_RESULT_EQ
             |D;JEQ
-            |// a != b. Store 0 in temp0.
+            |// x != y. Store 0 in temp0.
             |@{temp0}
             |M=0
             |@__EQ_RETURN_RESULT
             |0;JMP
             |(__EQ_RESULT_EQ)
-            |// a == b. Store -1 in temp0.
+            |// x == y. Store -1 in temp0.
             |@{temp0}
             |M=-1
             |(__EQ_RETURN_RESULT)
+            |@{temp0}
+            |D=M
+            |@SP
+            |A=M
+            |M=D
+            |@SP
+            |M=M+1
+            |// Return
+            |@R15
+            |A=M
+            |0;JMP
+            """)
+
+    def cg_lt(self):
+        if '__LT' in self.subs:
+            return
+        temp0 = self.config.temp_base
+        self.subs['__LT'] = unindent(f"""
+            |// *** Subroutine: Lt ***
+            |// y = pop; x = pop; if x < y push -1 else push 0
+            |(__LT)
+            |// D = MEM[--SP]
+            |@SP
+            |M=M-1
+            |@SP
+            |A=M
+            |D=M
+            |// A = MEM[--SP]
+            |@SP
+            |M=M-1
+            |@SP
+            |A=M
+            |// If M-D < 0, then x < y
+            |D=M-D
+            |@__LT_RESULT_LT
+            |D;JLT
+            |// x not lt y. Store 0 (false) in temp0.
+            |@{temp0}
+            |M=0
+            |@__CMP_RETURN_RESULT
+            |0;JMP
+            |(__LT_RESULT_LT)
+            |// x < y. Store -1 (true) in temp0.
+            |@{temp0}
+            |M=-1
+            |(__CMP_RETURN_RESULT)
             |@{temp0}
             |D=M
             |@SP
