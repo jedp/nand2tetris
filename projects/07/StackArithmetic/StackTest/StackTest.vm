@@ -38,8 +38,8 @@ push constant 53
 add
 push constant 112
 sub
-//neg
-//and
-//push constant 82
-//or
-//not
+neg
+and
+push constant 82
+or
+not

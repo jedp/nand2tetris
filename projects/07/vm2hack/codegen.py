@@ -8,6 +8,8 @@ ARG_ADD = 1
 ARG_SUB = 2
 ARG_AND = 3
 ARG_OR  = 4
+ARG_NEG = 0
+ARG_NOT = 1
 
 def unindent(text):
     """
@@ -97,9 +99,12 @@ class CodeWriter:
         if cmd.type == 'Arithmetic':
             self.cg_binop_popxy()
             self.cg_arith()
+            self.cg_monop()
             self.cg_cmp()
             if cmd.arg1 in ['add', 'sub', 'and', 'or']:
                 return self.cg_call_arith(cmd.arg1)
+            if cmd.arg1 in ['neg', 'not']:
+                return self.cg_call_monop(cmd.arg1)
             if cmd.arg1 in ['lt', 'eq', 'gt']:
                 return self.cg_call_cmp(cmd.arg1)
 
@@ -130,7 +135,6 @@ class CodeWriter:
             """))
 
     def cg_call_cmp(self, fn):
-        ret = self.nextRet()
         if fn == 'lt':
             arg = -1
         elif fn == 'eq':
@@ -139,28 +143,37 @@ class CodeWriter:
             arg = 1
         else:
             raise ValueError(f"Unknown cmp function: {fn}")
-        self.cg_call('__CMP', ret, arg)
+        self.cg_call('__CMP', arg)
+
+    def cg_call_monop(self, fn):
+        if fn == 'neg':
+            arg = ARG_NEG
+        elif fn == 'not':
+            arg = ARG_NOT
+        else:
+            raise ValueError(f"Unknown monop: {fn}")
+        self.cg_call('__UNARY', arg)
 
     def cg_call_arith(self, fn):
-        ret = self.nextRet()
         if fn == 'add':
-            arg = 1
+            arg = ARG_ADD
         elif fn == 'sub':
-            arg = 2
+            arg = ARG_SUB
         elif fn == 'and':
-            arg = 3
+            arg = ARG_AND
         elif fn == 'or':
-            arg = 4
+            arg = ARG_OR
         else:
             raise ValueError(f"Unknown function: {fn}")
-        self.cg_call('__ARITHMETIC', ret, arg)
+        self.cg_call('__ARITHMETIC', arg)
 
-    def cg_call(self, label, ret, arg):
+    def cg_call(self, label, arg):
         """
         Call a function with a single primitive numeric argument.
 
         Label is label to jump to.
         """
+        ret = self.nextRet()
         if arg < 0:
             argstr = str(32768 + arg)
         else:
@@ -213,6 +226,72 @@ class CodeWriter:
             |0;JEQ
             """)
 
+    def cg_monop(self):
+        """
+        Routine to perform unary operations Neg and Not.
+
+        Args:
+        R13: 0 for neg, 1 for not
+        R15: Return address
+
+        Stack:
+        x = pop
+        push op x
+        """
+        if '__UNARY' in self.subs:
+            return
+        temp0 = self.config.temp_base
+        temp1 = self.config.temp_base + 1
+        temp7 = self.config.temp_base + 7
+        self.subs['__UNARY'] = unindent(f"""
+            |// *** Subroutine: Unary operator arithmetic function ***
+            |// x = pop; push op x
+            |// Caller set function in R13:
+            |// R13 = 0 for neg, 1 for not
+            |// R15 = return address
+            |(__UNARY)
+            |@R15
+            |D=M
+            |@{temp7}       // Store return address in temp7
+            |M=D
+            |@SP            // x = MEM[--SP]
+            |M=M-1
+            |@SP
+            |A=M
+            |D=M
+            |@{temp0}       // Store x in temp0
+            |M=D
+            |@R13           // Switch on requested function.
+            |D=M
+            |@__UNARY_NEG
+            |D;JEQ          // Jump to Neg
+            |               // Fall through to Not
+            |@{temp0}       // Load x
+            |D=M
+            |@{temp1}       // Store !x in temp1
+            |M=!D
+            |@__UNARY_RETURN_RESULT
+            |0;JEQ
+            |
+            |(__UNARY_NEG)
+            |@{temp0}
+            |D=M
+            |@{temp1}       // Store -x in temp1
+            |M=-D
+            |               // Fall through to return result
+            |(__UNARY_RETURN_RESULT)
+            |@{temp1}
+            |D=M
+            |@SP            // MEM[SP++] = temp1
+            |A=M
+            |M=D
+            |@SP
+            |M=M+1
+            |@{temp7}       // Return
+            |A=M
+            |0;JMP
+            """)
+
     def cg_arith(self):
         """
         Routine to perform addition or subtraction.
@@ -232,8 +311,8 @@ class CodeWriter:
         temp1 = self.config.temp_base + 1
         temp7 = self.config.temp_base + 7
         self.subs['__ARITHMETIC'] = unindent(f"""
-            |// *** Subroutine: Add ***
-            |// a = pop; b = pop; d = a + b; push d
+            |// *** Subroutine: Binary operator arithmetic function ***
+            |// a = pop; b = pop; d = a op b; push d
             |// Caller sets function in R13:
             |// R13 = ID of function (add, sub, and, or)
             |// R15 = return address
