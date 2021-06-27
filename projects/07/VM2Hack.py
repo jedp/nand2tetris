@@ -5,8 +5,6 @@ if __name__ == '__main__':
     import os
     sys.path.append(os.path.join(os.path.dirname(__file__), "vm2hack"))
 
-    from vm2hack.compiler import Compiler
-    fn = sys.argv[1]
-    with open(fn, 'r') as src:
-        print(Compiler(src.read()).compile())
+    from vm2hack.translator import Translator
+    print(Translator(sys.argv[1]).translate())
 

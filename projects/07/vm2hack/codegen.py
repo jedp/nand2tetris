@@ -12,7 +12,7 @@ def unindent(text):
     return '\n'.join([line.split('|')[1] for line in lines])
 
 
-class CompilerConfig:
+class Config:
     def __init__(self,
             sp=0,
             lcl=1,
@@ -37,16 +37,17 @@ class CompilerConfig:
         self.static_base = static_base
         self.stack_base = stack_base
 
-class Compiler:
-    def __init__(self, text, config=CompilerConfig()):
+class CodeWriter:
+    def __init__(self, text, ns, config=Config()):
         self.input = Parser(text).parse()
         self.config = config
         self.text = []
+        self.ns = ns
         self.subs = {}
         self.ret = 0
         self.labels = set("__STOP")
 
-    def compile(self):
+    def genCode(self):
         if self.input['errors']:
             print("ERRORS", file=sys.stderr)
             for err in self.input['errors']:
@@ -85,15 +86,17 @@ class Compiler:
 
     def cg(self, cmd):
         if cmd.type == 'Arithmetic':
+            self.cg_binop_popxy()
+            self.cg_add()
+            self.cg_cmp()
             if cmd.arg1 == 'add':
-                self.cg_add()
                 return self.cg_call('__ADD')
             if cmd.arg1 == 'eq':
-                self.cg_eq()
-                return self.cg_call('__EQ')
+                return self.cg_call_cmp(cmd.arg1)
             if cmd.arg1 == 'lt':
-                self.cg_lt()
-                return self.cg_call('__LT')
+                return self.cg_call_cmp(cmd.arg1)
+            if cmd.arg1 == 'gt':
+                return self.cg_call_cmp(cmd.arg1)
 
         if cmd.type == 'Push':
             return self.cg_push(cmd)
@@ -133,6 +136,63 @@ class Compiler:
             |0;JMP
             |({ret})
             """))
+
+    def cg_call_cmp(self, fn):
+        ret = f"__RET_{self.ret}"
+        self.ret += 1
+        if fn == 'lt':
+            arg = '-1'
+        elif fn == 'eq':
+            arg = '0'
+        elif fn == 'gt':
+            arg = '1'
+        else:
+            raise ValueError(f"Unknown cmp function: {fn}")
+        self.asm(unindent(f"""
+            |@{ret}
+            |D=A
+            |@R15
+            |M=D
+            |@R13
+            |M={arg}
+            |@__CMP
+            |0;JMP
+            |({ret})
+            """))
+
+    def cg_binop_popxy(self):
+        """
+        A reusable snippet for capturing x and y from the top of the stack.
+
+        Mutates the stack and sets variables:
+        R14 = pop y
+        R13 = pop x
+
+        Return to address in R15.
+        """
+        if '__GET_XY' in self.subs:
+            return
+        self.subs['__GET_XY'] = unindent("""
+                |// *** R14 = pop y, R13 = pop x; Jump to R15
+                |(__GET_XY)
+                |@SP        // pop y:
+                |M=M-1      // --SP
+                |@SP
+                |A=M
+                |D=M
+                |@R14
+                |M=D        // R14 = MEM[SP]
+                |@SP        // pop x
+                |M=M-1      // --SP
+                |@SP
+                |A=M
+                |D=M
+                |@R13
+                |M=D        // R13 = MEM[SP]
+                |@R15       // Return to @R15
+                |A=M
+                |0;JEQ
+                """)
 
     def cg_add(self):
         if '__ADD' in self.subs:
@@ -212,48 +272,98 @@ class Compiler:
             |0;JMP
             """)
 
-    def cg_lt(self):
-        if '__LT' in self.subs:
+    def cg_cmp(self):
+        """
+        Args:
+        R13 = cmp
+        R15 = return address
+
+        y = pop
+        x = pop
+        push x cmp y
+
+        Specify comparison function in R13:
+        cmp = -1 ==> lt
+        cmp =  0 ==> eq
+        cmp =  1 ==> gt
+        """
+        if '__CMP' in self.subs:
             return
         temp0 = self.config.temp_base
-        self.subs['__LT'] = unindent(f"""
-            |// *** Subroutine: Lt ***
-            |// y = pop; x = pop; if x < y push -1 else push 0
-            |(__LT)
-            |// D = MEM[--SP]
-            |@SP
-            |M=M-1
-            |@SP
-            |A=M
+        temp1 = self.config.temp_base + 1
+        temp7 = self.config.temp_base + 7
+        self.subs['__CMP'] = unindent(f"""
+            |// *** Subroutine: Compare ***
+            |// y = pop; x = pop; if x cmp y push -1 else push 0
+            |// Caller sets comparison function in R13:
+            |// R13 = -1 ==> lt
+            |// R13 =  0 ==> eq
+            |// R13 =  1 ==> gt
+            |(__CMP)
+            |@R15
             |D=M
-            |// A = MEM[--SP]
-            |@SP
-            |M=M-1
-            |@SP
-            |A=M
-            |// If M-D < 0, then x < y
-            |D=M-D
-            |@__LT_RESULT_LT
+            |@{temp7}       // Store return address in temp7.
+            |M=D
+            |@R13
+            |D=M
+            |@{temp1}       // Store comparison function in temp1.
+            |M=D
+            |@__CMP_XY
+            |D=A
+            |@R15
+            |M=D
+            |@__GET_XY      // Get x and y from stack.
+            |0;JEQ
+            |(__CMP_XY)     // Now R13=x, R14=y
+            |@{temp1}
+            |D=M            // Which comparison function.
+            |@__CMP_LT
+            |D;JLT          // Jump to compare lt?
+            |@__CMP_GT
+            |D;JGT          // Jump to compare gt?
+            |               // Fall through to compare eq.
+            |(__CMP_EQ)     // Compare: EQ
+            |@R14           // y
+            |D=M
+            |@R13           // x
+            |D=M-D          // If x eq y, then D=M-D == 0
+            |@__CMP_STORE_TRUE
+            |D;JEQ
+            |@__CMP_STORE_FALSE
+            |0;JMP
+            |(__CMP_LT)     // Compare: x lt y?
+            |@R14           // y
+            |D=M
+            |@R13           // x
+            |D=M-D          // If x < y, then D=M-D < 0
+            |@__CMP_STORE_TRUE
             |D;JLT
-            |// x not lt y. Store 0 (false) in temp0.
+            |@__CMP_STORE_FALSE
+            |0;JMP
+            |(__CMP_GT)     // Compare: GT
+            |@R14           // y
+            |D=M
+            |@R13           // x
+            |D=M-D          // If x > y, then D=M-D > 0
+            |@__CMP_STORE_TRUE
+            |D;JLT          // If not true, fall through to store false.
+            |(__CMP_STORE_FALSE)
             |@{temp0}
-            |M=0
+            |M=0            // x not cmp y. Store 0 (false) in temp0.
             |@__CMP_RETURN_RESULT
             |0;JMP
-            |(__LT_RESULT_LT)
-            |// x < y. Store -1 (true) in temp0.
+            |(__CMP_STORE_TRUE)
             |@{temp0}
-            |M=-1
+            |M=-1           // x cmp y. Store -1 (true) in temp0
             |(__CMP_RETURN_RESULT)
             |@{temp0}
             |D=M
             |@SP
             |A=M
-            |M=D
+            |M=D            // Push temp0 val on stack.
             |@SP
             |M=M+1
-            |// Return
-            |@R15
+            |@{temp7}       // Return
             |A=M
             |0;JMP
             """)
@@ -276,9 +386,12 @@ class Compiler:
 
 
 if __name__ == '__main__':
+    import os
     import sys
+
     fn = sys.argv[1]
+    ns = os.path.split(fn)[-1].split('.')[0]
 
     with open(fn, 'r') as src:
-        print(Compiler(src.read()).compile())
+        print(CodeWriter(src.read(), ns).genCode())
 
