@@ -32,12 +32,12 @@ gt
 push constant 32766
 push constant 32766
 gt
-//push constant 57
-//push constant 31
-//push constant 53
-//add
-//push constant 112
-//sub
+push constant 57
+push constant 31
+push constant 53
+add
+push constant 112
+sub
 //neg
 //and
 //push constant 82

@@ -4,13 +4,17 @@ import sys
 from vm2hack.parser import Parser
 
 
+ARG_ADD = 1
+ARG_SUB = 2
+ARG_AND = 3
+ARG_OR  = 4
+
 def unindent(text):
     """
     Unindent a multiline string up to and including the '|' character.
     """
     lines = text.strip().splitlines()
     return '\n'.join([line.split('|')[1] for line in lines])
-
 
 class Config:
     def __init__(self,
@@ -84,18 +88,19 @@ class CodeWriter:
         """
         self.subs.append(text)
 
+    def nextRet(self):
+        ret = f"__RET_{self.ret}"
+        self.ret += 1
+        return ret
+
     def cg(self, cmd):
         if cmd.type == 'Arithmetic':
             self.cg_binop_popxy()
-            self.cg_add()
+            self.cg_arith()
             self.cg_cmp()
-            if cmd.arg1 == 'add':
-                return self.cg_call('__ADD')
-            if cmd.arg1 == 'eq':
-                return self.cg_call_cmp(cmd.arg1)
-            if cmd.arg1 == 'lt':
-                return self.cg_call_cmp(cmd.arg1)
-            if cmd.arg1 == 'gt':
+            if cmd.arg1 in ['add', 'sub', 'and', 'or']:
+                return self.cg_call_arith(cmd.arg1)
+            if cmd.arg1 in ['lt', 'eq', 'gt']:
                 return self.cg_call_cmp(cmd.arg1)
 
         if cmd.type == 'Push':
@@ -124,38 +129,52 @@ class CodeWriter:
             |M=M+1
             """))
 
-    def cg_call(self, label):
-        ret = f"__RET_{self.ret}"
-        self.ret += 1
-        self.asm(unindent(f"""
-            |@{ret}
-            |D=A
-            |@R15
-            |M=D
-            |@{label}
-            |0;JMP
-            |({ret})
-            """))
-
     def cg_call_cmp(self, fn):
-        ret = f"__RET_{self.ret}"
-        self.ret += 1
+        ret = self.nextRet()
         if fn == 'lt':
-            arg = '-1'
+            arg = -1
         elif fn == 'eq':
-            arg = '0'
+            arg = 0
         elif fn == 'gt':
-            arg = '1'
+            arg = 1
         else:
             raise ValueError(f"Unknown cmp function: {fn}")
+        self.cg_call('__CMP', ret, arg)
+
+    def cg_call_arith(self, fn):
+        ret = self.nextRet()
+        if fn == 'add':
+            arg = 1
+        elif fn == 'sub':
+            arg = 2
+        elif fn == 'and':
+            arg = 3
+        elif fn == 'or':
+            arg = 4
+        else:
+            raise ValueError(f"Unknown function: {fn}")
+        self.cg_call('__ARITHMETIC', ret, arg)
+
+    def cg_call(self, label, ret, arg):
+        """
+        Call a function with a single primitive numeric argument.
+
+        Label is label to jump to.
+        """
+        if arg < 0:
+            argstr = str(32768 + arg)
+        else:
+            argstr = str(arg)
         self.asm(unindent(f"""
             |@{ret}
             |D=A
             |@R15
             |M=D
+            |@{argstr}
+            |D=A
             |@R13
-            |M={arg}
-            |@__CMP
+            |M=D
+            |@{label}
             |0;JMP
             |({ret})
             """))
@@ -173,119 +192,157 @@ class CodeWriter:
         if '__GET_XY' in self.subs:
             return
         self.subs['__GET_XY'] = unindent("""
-                |// *** R14 = pop y, R13 = pop x; Jump to R15
-                |(__GET_XY)
-                |@SP        // pop y:
-                |M=M-1      // --SP
-                |@SP
-                |A=M
-                |D=M
-                |@R14
-                |M=D        // R14 = MEM[SP]
-                |@SP        // pop x
-                |M=M-1      // --SP
-                |@SP
-                |A=M
-                |D=M
-                |@R13
-                |M=D        // R13 = MEM[SP]
-                |@R15       // Return to @R15
-                |A=M
-                |0;JEQ
-                """)
-
-    def cg_add(self):
-        if '__ADD' in self.subs:
-            return
-        self.subs['__ADD'] = unindent("""
-            |// *** Subroutine: Add ***
-            |// *** a = pop; b = pop; d = a + b; push d
-            |(__ADD)
-            |// D = MEM[--SP]
-            |@SP
-            |M=M-1
+            |// *** R14 = pop y, R13 = pop x; Jump to R15
+            |(__GET_XY)
+            |@SP            // pop y:
+            |M=M-1          // --SP
             |@SP
             |A=M
             |D=M
-            |// A = MEM[--SP]
-            |@SP
-            |M=M-1
-            |@SP
-            |A=M
-            |// D = Add
-            |D=D+M
-            |// MEM[SP++] = D
+            |@R14
+            |M=D            // R14 = MEM[SP]
+            |@SP            // pop x
+            |M=M-1          // --SP
             |@SP
             |A=M
-            |M=D
-            |@SP
-            |M=M+1
-            |// Return
-            |@R15
+            |D=M
+            |@R13
+            |M=D            // R13 = MEM[SP]
+            |@R15           // Return to @R15
             |A=M
-            |0;JMP
+            |0;JEQ
             """)
 
-    def cg_eq(self):
-        if '__EQ' in self.subs:
+    def cg_arith(self):
+        """
+        Routine to perform addition or subtraction.
+
+        Args:
+        R13 ID for Add, Sub, And, or Or
+        R15 Return address
+
+        Stack:
+        y = pop
+        x = pop
+        push x fn y
+        """
+        if '__ARITHMETIC' in self.subs:
             return
         temp0 = self.config.temp_base
-        self.subs['__EQ'] = unindent(f"""
-            |// *** Subroutine: Eq ***
-            |// y = pop; x = pop; if x == y push -1 else push 0
-            |(__EQ)
-            |// D = MEM[--SP]
-            |@SP
-            |M=M-1
-            |@SP
-            |A=M
+        temp1 = self.config.temp_base + 1
+        temp7 = self.config.temp_base + 7
+        self.subs['__ARITHMETIC'] = unindent(f"""
+            |// *** Subroutine: Add ***
+            |// a = pop; b = pop; d = a + b; push d
+            |// Caller sets function in R13:
+            |// R13 = ID of function (add, sub, and, or)
+            |// R15 = return address
+            |(__ARITHMETIC)
+            |@R15
             |D=M
-            |// A = MEM[--SP]
-            |@SP
-            |M=M-1
-            |@SP
-            |A=M
-            |// If D-M == 0, then a == b
-            |D=D-M
-            |@__EQ_RESULT_EQ
-            |D;JEQ
-            |// x != y. Store 0 in temp0.
-            |@{temp0}
-            |M=0
-            |@__EQ_RETURN_RESULT
+            |@{temp7}       // Store return address in temp7.
+            |M=D
+            |@R13
+            |D=M
+            |@{temp1}       // Store func choice in temp1.
+            |M=D
+            |@__ARITH_FN    // Push return address for get-xy.
+            |D=A
+            |@R15
+            |M=D
+            |@__GET_XY      // Get x and y.
             |0;JMP
-            |(__EQ_RESULT_EQ)
-            |// x == y. Store -1 in temp0.
-            |@{temp0}
-            |M=-1
-            |(__EQ_RETURN_RESULT)
+            |(__ARITH_FN)   // Now R13=x, R14=y.
+            |
+            |@{temp1}       // Switch on temp1 to find the right function.
+            |D=M
+            |@{ARG_ADD}
+            |D=D-A
+            |@__ARITH_ADD
+            |D;JEQ          // goto Add
+            |
+            |@{temp1}
+            |D=M
+            |@{ARG_SUB}
+            |D=D-A
+            |@__ARITH_SUB
+            |D;JEQ          // goto Sub
+            |
+            |@{temp1}
+            |D=M
+            |@{ARG_AND}
+            |D=D-A
+            |@__ARITH_AND
+            |D;JEQ          // goto And
+            |
+            |               // Else fall through to Or.
+            |
+            |@R13           // x from get-xy
+            |D=M
+            |@R14           // y from get-xy
+            |A=M
+            |D=D|A
+            |@{temp0}       // Store x|y in temp0.
+            |M=D
+            |@__ARITH_STORE_RESULT
+            |0;JMP          // goto return result
+            |
+            |(__ARITH_AND)
+            |@R13           // x
+            |D=M
+            |@R14           // y
+            |A=M
+            |D=D&A
+            |@{temp0}       // Store x&y in temp0.
+            |M=D
+            |@__ARITH_STORE_RESULT
+            |0;JMP          // goto return result
+            |
+            |(__ARITH_SUB)
+            |@R13           // x
+            |D=M
+            |@R14           // y
+            |A=M
+            |D=D-A
+            |@{temp0}       // Store x-y in temp0.
+            |M=D
+            |@__ARITH_STORE_RESULT
+            |0;JMP          // goto return result
+            |
+            |(__ARITH_ADD)
+            |@R13           // x
+            |D=M
+            |@R14           // y
+            |A=M
+            |D=D+A
+            |@{temp0}       // Store x+y in temp0.
+            |M=D            // Fall through to store result.
+            |
+            |(__ARITH_STORE_RESULT)
             |@{temp0}
             |D=M
-            |@SP
+            |@SP            // MEM[SP] = x+y
             |A=M
             |M=D
             |@SP
-            |M=M+1
-            |// Return
-            |@R15
+            |M=M+1          // SP++
+            |@{temp7}       // Return
             |A=M
             |0;JMP
             """)
 
     def cg_cmp(self):
         """
+        Routine to perform comparisons (lt, eq, gt).
+
         Args:
-        R13 = cmp
+        R13 = -1 for lt, 0 for eq, 1 for gt
         R15 = return address
 
+        Stack:
         y = pop
         x = pop
         push x cmp y
-
-        Specify comparison function in R13:
-        cmp = -1 ==> lt
-        cmp =  0 ==> eq
-        cmp =  1 ==> gt
         """
         if '__CMP' in self.subs:
             return
@@ -299,6 +356,7 @@ class CodeWriter:
             |// R13 = -1 ==> lt
             |// R13 =  0 ==> eq
             |// R13 =  1 ==> gt
+            |// R15 = return address
             |(__CMP)
             |@R15
             |D=M
@@ -315,10 +373,12 @@ class CodeWriter:
             |@__GET_XY      // Get x and y from stack.
             |0;JEQ
             |(__CMP_XY)     // Now R13=x, R14=y
+            |
             |@{temp1}
             |D=M            // Which comparison function.
             |@__CMP_LT
             |D;JLT          // Jump to compare lt?
+            |
             |@__CMP_GT
             |D;JGT          // Jump to compare gt?
             |               // Fall through to compare eq.
@@ -331,6 +391,7 @@ class CodeWriter:
             |D;JEQ
             |@__CMP_STORE_FALSE
             |0;JMP
+            |
             |(__CMP_LT)     // Compare: x lt y?
             |@R14           // y
             |D=M
@@ -340,6 +401,7 @@ class CodeWriter:
             |D;JLT
             |@__CMP_STORE_FALSE
             |0;JMP
+            |
             |(__CMP_GT)     // Compare: GT
             |@R14           // y
             |D=M
@@ -347,6 +409,7 @@ class CodeWriter:
             |D=M-D          // If x > y, then D=M-D > 0
             |@__CMP_STORE_TRUE
             |D;JLT          // If not true, fall through to store false.
+            |
             |(__CMP_STORE_FALSE)
             |@{temp0}
             |M=0            // x not cmp y. Store 0 (false) in temp0.
