@@ -1,4 +1,5 @@
 tools/
 *.out
 *.pyc
+.DS_Store
 
