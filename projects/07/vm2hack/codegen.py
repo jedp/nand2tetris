@@ -141,21 +141,34 @@ class CodeWriter:
             offset = self.static_offsets[static_name]
             self.asm(unindent(f"""
                 @{base}
-                D=A
+                D=M
                 @{offset}
                 D=D+A
                 """))
-            return self.config.static_base + self.static_offsets[static_name]
+            return
+        elif cmd.arg1 == 'temp':
+            # Any access to temp i, where i varies from 0..7,
+            # should be translated to RAM location 5 + i.
+            base = self.config.temp_base
+            offset = int(cmd.arg2)
+            self.asm(unindent(f"""
+                @{base}
+                D=A     // A, not M, because it's TEMP.
+                @{offset}
+                D=D+A
+                """))
+            return
         elif cmd.arg1 in self.config.segments:
             base = self.config.segments[cmd.arg1]
             offset = int(cmd.arg2)
             self.asm(unindent(f"""
                 // Base {cmd.arg1} + {cmd.arg2}
                 @{base}
-                D=A
+                D=M
                 @{offset}
                 D=D+A
                 """))
+            return
         raise ValueError(f"Can't generate address for: {cmd}")
 
     def cg_push(self, cmd):
@@ -167,6 +180,11 @@ class CodeWriter:
                 """))
         else:
             self.cg_seg_addr(cmd)
+            # Load D = M[D]
+            self.asm(unindent("""
+                A=D
+                D=M
+                """))
 
         # Push
         self.asm(unindent("""
@@ -182,10 +200,11 @@ class CodeWriter:
             raise ValueError(f"Cannot pop to constant: {cmd}")
         # D = dest address
         self.cg_seg_addr(cmd)
+        # Er ... we may not be allowed to blow away temp like this.
+        temp_base = self.config.segments['temp']
         self.asm(unindent(f"""
             // Store dest addr in temp0
             @{temp_base}
-            A=M
             M=D
             // [SP--]
             @SP
