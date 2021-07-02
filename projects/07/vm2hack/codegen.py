@@ -146,6 +146,20 @@ class CodeWriter:
                 D=D+A
                 """))
             return
+        elif cmd.arg1 == 'pointer':
+            # pointer 0 is 'this'
+            # pointer 1 is 'that'
+            if cmd.arg2 == '0':
+                addr = self.config.this
+            elif cmd.arg2 == '1':
+                addr = self.config.that
+            else:
+                raise ValueError(f"Bad pointer address: {cmd.arg2}")
+            self.asm(unindent(f"""
+                @{addr}
+                D=A
+                """))
+            return
         elif cmd.arg1 == 'temp':
             # Any access to temp i, where i varies from 0..7,
             # should be translated to RAM location 5 + i.
