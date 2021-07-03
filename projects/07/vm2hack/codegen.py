@@ -4,16 +4,6 @@ import sys
 from vm2hack.parser import Parser
 
 
-ARG_ADD = 1
-ARG_SUB = 2
-ARG_AND = 3
-ARG_OR  = 4
-ARG_NEG = 0
-ARG_NOT = 1
-ARG_LT  = 0
-ARG_EQ  = 1
-ARG_GT  = 2
-
 def unindent(text):
     """
     Unindent a multiline string up to and including the '|' character.
@@ -45,28 +35,33 @@ class Config:
         self.r15 = r15
         self.static_base = static_base
         self.stack_base = stack_base
+
+        # Mapping of vm word to asm register.
         self.segments = {
             'local': 'LCL',
             'argument': 'ARG',
             'this': 'THIS',
-            'that': 'THAT',
-            'temp': 'TEMP',
-            'static': '16'
+            'that': 'THAT'
         }
 
 class CodeWriter:
-    def __init__(self, text, ns, config=Config()):
-        self.input = Parser(text).parse()
+    """
+    Read Hack vm source and convert it to asm.
+    """
+
+    def __init__(self, vm_code, ns, config=Config()):
+        self.input = Parser(vm_code).parse()
         self.config = config
         self.text = []
         self.ns = ns
         self.next_static = 0
+        self.next_label = 0
         self.static_offsets = {}
-        self.subs = {}
-        self.ret = 0
-        self.labels = set("__STOP")
 
     def genCode(self):
+        """
+        Generate the complete asm output.
+        """
         if self.input['errors']:
             print("ERRORS", file=sys.stderr)
             for err in self.input['errors']:
@@ -86,527 +81,320 @@ class CodeWriter:
         self.asm("// *** STOP loop ***")
         self.cg_stop()
 
-        # Add all the subroutines that were generated.
-        self.asm('// *** Subroutines ***')
-        for label in self.subs:
-            self.text += self.subs[label].splitlines()
-        self.asm("// *** End of file ***")
-
         return '\n'.join(self.text)
 
     def asm(self, text):
+        """
+        Helper function to add asm text.
+        """
         self.text.append(text)
 
-    def sub(self, text):
+    def uniqueLabel(self):
         """
-        Same as text, but goes at the end of the program for legibility.
+        Generate a unique label for jumps.
         """
-        self.subs.append(text)
-
-    def nextRet(self):
-        ret = f"__RET_{self.ret}"
-        self.ret += 1
-        return ret
+        label = f"__L{self.next_label}"
+        self.next_label += 1
+        return label
 
     def cg(self, cmd):
+        """
+        Handle a command and generate the asm for it.
+        """
         if cmd.type == 'Arithmetic':
-            self.cg_binop_popxy()
-            self.cg_arith()
-            self.cg_monop()
-            self.cg_cmp()
             if cmd.arg1 in ['add', 'sub', 'and', 'or']:
-                return self.cg_call_arith(cmd.arg1)
+                return self.cg_inline_arith(cmd.arg1)
             if cmd.arg1 in ['neg', 'not']:
-                return self.cg_call_monop(cmd.arg1)
+                return self.cg_inline_unary(cmd.arg1)
             if cmd.arg1 in ['lt', 'eq', 'gt']:
-                return self.cg_call_cmp(cmd.arg1)
+                return self.cg_inline_cmp(cmd.arg1)
 
         if cmd.type == 'Push':
-            return self.cg_push(cmd)
+            if cmd.arg1 == 'constant':
+                return self.cg_push_constant(cmd)
+            if cmd.arg1 in ['argument', 'local', 'this', 'that']:
+                return self.cg_push_segment(cmd)
+            if cmd.arg1 == 'temp':
+                return self.cg_push_temp(cmd)
+            if cmd.arg1 == 'pointer':
+                return self.cg_push_pointer(cmd)
+            if cmd.arg1 == 'static':
+                return self.cg_push_static(cmd)
 
         if cmd.type == 'Pop':
-            return self.cg_pop(cmd)
+            if cmd.arg1 == 'constant':
+                raise ValueError(f"Syntax error. Cannot pop constant: {cmd}")
+            if cmd.arg1 in ['argument', 'local', 'this', 'that']:
+                return self.cg_pop_segment(cmd)
+            if cmd.arg1 == 'temp':
+                return self.cg_pop_temp(cmd)
+            if cmd.arg1 == 'pointer':
+                return self.cg_pop_pointer(cmd)
+            if cmd.arg1 == 'static':
+                return self.cg_pop_static(cmd)
 
         raise ValueError(f"Unhandled command: {cmd}")
 
-    def cg_seg_addr(self, cmd):
-        if not cmd.arg2:
-            raise ValueError(f"Missing offset for stack op: {cmd}")
-        if cmd.arg1 == 'static':
-            static_name = self.ns + '.' + cmd.arg2
-            if static_name not in self.static_offsets:
-                self.static_offsets[static_name] = self.next_static
-                self.next_static += 1
-            base = self.config.segments['static']
-            offset = self.static_offsets[static_name]
-            self.asm(unindent(f"""
-                @{base}
-                D=M
-                @{offset}
-                D=D+A
-                """))
-            return
-        elif cmd.arg1 == 'pointer':
-            # pointer 0 is 'this'
-            # pointer 1 is 'that'
-            if cmd.arg2 == '0':
-                addr = self.config.this
-            elif cmd.arg2 == '1':
-                addr = self.config.that
-            else:
-                raise ValueError(f"Bad pointer address: {cmd.arg2}")
-            self.asm(unindent(f"""
-                @{addr}
-                D=A
-                """))
-            return
-        elif cmd.arg1 == 'temp':
-            # Any access to temp i, where i varies from 0..7,
-            # should be translated to RAM location 5 + i.
-            base = self.config.temp_base
-            offset = int(cmd.arg2)
-            self.asm(unindent(f"""
-                @{base}
-                D=A     // A, not M, because it's TEMP.
-                @{offset}
-                D=D+A
-                """))
-            return
-        elif cmd.arg1 in self.config.segments:
-            base = self.config.segments[cmd.arg1]
-            offset = int(cmd.arg2)
-            self.asm(unindent(f"""
-                // Base {cmd.arg1} + {cmd.arg2}
-                @{base}
-                D=M
-                @{offset}
-                D=D+A
-                """))
-            return
-        raise ValueError(f"Can't generate address for: {cmd}")
+    def cg_push_constant(self, cmd):
+        """
+        Push a constant value on the stack.
 
-    def cg_push(self, cmd):
-        if cmd.arg1 == 'constant':
-            # D = constant
-            self.asm(unindent(f"""
-                @{cmd.arg2}
-                D=A
-                """))
-        else:
-            self.cg_seg_addr(cmd)
-            # Load D = M[D]
-            self.asm(unindent("""
-                A=D
-                D=M
-                """))
-
-        # Push
-        self.asm(unindent("""
-            @SP        // MEM[SP] = D
+        Value must be positive, unsigned int between 0 and 32767.
+        """
+        assert(cmd.arg1 == 'constant')
+        self.asm(unindent(f"""
+            @{cmd.arg2}     // Constant {cmd.arg2}
+            D=A             // D = {cmd.arg2}
+            @SP             // MEM[SP] = D
             A=M
             M=D
-            @SP        // SP++
+            @SP             // SP++
             M=M+1
             """))
 
-    def cg_pop(self, cmd):
-        if cmd.arg1 == 'constant':
-            raise ValueError(f"Cannot pop to constant: {cmd}")
-        # D = dest address
-        self.cg_seg_addr(cmd)
-        # Er ... we may not be allowed to blow away temp like this.
-        temp_base = self.config.segments['temp']
+    def cg_push_segment(self, cmd):
+        """
+        Get value at segment+offset and push it on the stack.
+        """
+        assert(cmd.arg1 in self.config.segments)
+        base_ptr = self.config.segments[cmd.arg1]
+        offset = int(cmd.arg2)
         self.asm(unindent(f"""
-            // Store dest addr in temp0
-            @{temp_base}
-            M=D
-            // [SP--]
-            @SP
-            M=M-1
-            @SP
-            A=M
+            @{base_ptr}     // {cmd.arg1} base ptr: {base_ptr}
             D=M
-            @{temp_base}
+            @{offset}       // offset: {offset}
+            D=D+A           // D = addr of {cmd.arg1} {cmd.arg2}
+            A=D
+            D=M             // D = value at addr {cmd.arg1} {cmd.arg2}
+            @SP
             A=M
-            M=D
+            M=D             // MEM[SP] = D
+            @SP
+            M=M+1           // SP++
             """))
 
-    def cg_call_cmp(self, fn):
+    def cg_pop_segment(self, cmd):
+        """
+        Pop and store in segment+offset.
+        """
+        assert(cmd.arg1 in self.config.segments)
+        base_ptr = self.config.segments[cmd.arg1]
+        offset = int(cmd.arg2)
+        self.asm(unindent(f"""
+            @{base_ptr}     // {cmd.arg1} base ptr: {base_ptr}
+            D=M
+            @{offset}       // offset: {offset}
+            D=D+A           // D = {cmd.arg1} {cmd.arg2}
+            @R13
+            M=D             // Stash address. R13 = D
+            @SP
+            AM=M-1          // SP--
+            D=M             // D = MEM[SP]
+            @R13
+            A=M             // A = {cmd.arg1} {cmd.arg2}
+            M=D             // {cmd.arg1} {cmd.arg2} = D
+            """))
+
+    def cg_push_temp(self, cmd):
+        """
+        Get from temp segment at offset and push onto stack.
+        """
+        assert(cmd.arg1 == 'temp')
+        addr = self.config.temp_base + int(cmd.arg2)
+        self.asm(unindent(f"""
+            @{addr}         // Temp base + offset {cmd.arg2}
+            D=M
+            @SP
+            A=M
+            M=D             // MEM[SP] = value at temp + offset {cmd.arg2}
+            @SP
+            M=M+1           // SP++
+            """))
+
+    def cg_pop_temp(self, cmd):
+        """
+        Pop and store at offset in temp segment.
+        """
+        assert(cmd.arg1 == 'temp')
+        addr = self.config.temp_base + int(cmd.arg2)
+        self.asm(unindent(f"""
+            @SP
+            AM=M-1          // SP--
+            D=M             // D = MEM[SP]
+            @{addr}         // Temp base + offset {cmd.arg2}
+            M=D             // Temp {cmd.arg2} = D
+            """))
+
+    def cg_push_pointer(self, cmd):
+        """
+        Push the address of pointer 0 or 1 on the stack.
+        """
+        assert(cmd.arg1 == 'pointer')
+        if cmd.arg2 == '0':
+            addr = self.config.this
+        elif cmd.arg2 == '1':
+            addr = self.config.that
+        else:
+            raise ValueError(f"Bad pointer for push: {cmd}")
+        self.asm(unindent(f"""
+            @{addr}         // Pointer {cmd.arg2} addr
+            D=M
+            @SP
+            A=M
+            M=D             // MEM[SP] = value at pointer {cmd.arg2}
+            @SP
+            M=M+1           // SP++
+            """))
+
+    def cg_pop_pointer(self, cmd):
+        """
+        Pop a value and write it as the address of pointer 0 or 1.
+        """
+        assert(cmd.arg1 == 'pointer')
+        if cmd.arg2 == '0':
+            addr = self.config.this
+        elif cmd.arg2 == '1':
+            addr = self.config.that
+        else:
+            raise ValueError(f"Bad pointer for pop: {cmd}")
+        self.asm(unindent(f"""
+            @SP
+            AM=M-1          // SP--
+            D=M             // D = MEM[SP]
+            @{addr}         // Pointer {cmd.arg2} addr
+            M=D             // Pointer {cmd.arg2} = D
+            """))
+
+    def staticAddress(self, arg):
+        """
+        Get a static variable offset for the given static arg.
+        """
+        label = self.ns + '.' + arg
+        if label not in self.static_offsets:
+            self.static_offsets[label] = self.next_static
+            self.next_static += 1
+        base = self.config.static_base
+        offset = self.static_offsets[label]
+        return base + offset
+
+    def cg_push_static(self, cmd):
+        """
+        Push the given static variable onto the stack.
+        """
+        assert(cmd.arg1 == 'static')
+        addr = self.staticAddress(cmd.arg2)
+        self.asm(unindent(f"""
+            @{addr}         // Static addr {cmd.arg2} in {self.ns}
+            D=M
+            @SP
+            A=M
+            M=D             // MEM[SP] = value at static address {addr}
+            @SP
+            M=M+1           // SP++
+            """))
+
+    def cg_pop_static(self, cmd):
+        """
+        Pop the stack and store the value in the given static variable.
+        """
+        assert(cmd.arg1 == 'static')
+        addr = self.staticAddress(cmd.arg2)
+        self.asm(unindent(f"""
+            @SP
+            AM=M-1          // SP--
+            D=M             // D = MEM[SP]
+            @{addr}         // Static addr {cmd.arg2} in {self.ns}
+            M=D             // Static = D
+            """))
+
+    def cg_inline_cmp(self, fn):
+        """
+        Pop two values and push the result of the given comparision.
+
+        True is -1, false is 0.
+        """
         if fn == 'lt':
-            arg = ARG_LT
+            jmp = 'JGT'
         elif fn == 'eq':
-            arg = ARG_EQ
+            jmp = 'JEQ'
         elif fn == 'gt':
-            arg = ARG_GT
+            jmp = 'JLT'
         else:
             raise ValueError(f"Unknown cmp function: {fn}")
-        self.cg_call('__CMP', arg)
-
-    def cg_call_monop(self, fn):
-        if fn == 'neg':
-            arg = ARG_NEG
-        elif fn == 'not':
-            arg = ARG_NOT
-        else:
-            raise ValueError(f"Unknown monop: {fn}")
-        self.cg_call('__UNARY', arg)
-
-    def cg_call_arith(self, fn):
-        if fn == 'add':
-            arg = ARG_ADD
-        elif fn == 'sub':
-            arg = ARG_SUB
-        elif fn == 'and':
-            arg = ARG_AND
-        elif fn == 'or':
-            arg = ARG_OR
-        else:
-            raise ValueError(f"Unknown function: {fn}")
-        self.cg_call('__ARITHMETIC', arg)
-
-    def cg_call(self, label, arg):
-        """
-        Call a function with a single primitive numeric argument.
-
-        Label is label to jump to.
-        """
-        ret = self.nextRet()
-        argstr = str(arg)
+        true_branch = self.uniqueLabel()
+        store_result = self.uniqueLabel()
         self.asm(unindent(f"""
-            @{ret}
-            D=A
-            @R15
-            M=D
-            @{argstr}
-            D=A
-            @R13
-            M=D
-            @{label}
-            0;JMP
-            ({ret})
+            @SP
+            AM=M-1      // SP--
+            D=M         // D = MEM[SP]
+            @SP
+            AM=M-1      // SP--
+            D=D-M
+            @{true_branch}
+            D;{jmp}     // Comparing x {fn} y, so x-y;{jmp}
+            D=0         // Result = 0 (false)
+            @{store_result}
+            0;JEQ
+            ({true_branch})
+            D=-1        // Result = -1 (true)
+            ({store_result})
+            @SP
+            A=M
+            M=D         // MEM[SP] = result
+            @SP
+            M=M+1       // SP++
             """))
 
-    def cg_binop_popxy(self):
+    def cg_inline_unary(self, fn):
         """
-        A reusable snippet for capturing x and y from the top of the stack.
-
-        Mutates the stack and sets variables:
-        R14 = pop y
-        R13 = pop x
-
-        Return to address in R15.
+        Pop a value and push the result of the given unary operation.
         """
-        if '__GET_XY' in self.subs:
-            return
-        self.subs['__GET_XY'] = unindent("""
-            // *** R14 = pop y, R13 = pop x; Jump to R15
-            (__GET_XY)
-            @SP            // pop y:
-            M=M-1          // --SP
+        if fn == 'neg':
+            op = '-'
+        elif fn == 'not':
+            op = '!'
+        else:
+            raise ValueError(f"Unknown unary operator: {fn}")
+        self.asm(unindent(f"""
+            @SP
+            AM=M-1      // SP--
+            D={op}M     // D = MEM[SP]
             @SP
             A=M
-            D=M
-            @R14
-            M=D            // R14 = MEM[SP] = y
-            @SP            // pop x
-            M=M-1          // --SP
-            @SP
-            A=M
-            D=M
-            @R13
-            M=D            // R13 = MEM[SP] = x
-            @R15           // Return to @R15
-            A=M
-            0;JEQ
-            """)
-
-    def cg_monop(self):
-        """
-        Routine to perform unary operations Neg and Not.
-
-        Args:
-        R13: 0 for neg, 1 for not
-        R15: Return address
-
-        Stack:
-        x = pop
-        push op x
-        """
-        if '__UNARY' in self.subs:
-            return
-        temp0 = self.config.temp_base
-        temp1 = self.config.temp_base + 1
-        temp7 = self.config.temp_base + 7
-        self.subs['__UNARY'] = unindent(f"""
-            // *** Subroutine: Unary operator arithmetic function ***
-            // x = pop; push op x
-            // Caller set function in R13:
-            // R13 = 0 for neg, 1 for not
-            // R15 = return address
-            (__UNARY)
-            @R15
-            D=M
-            @{temp7}       // Store return address in temp7
             M=D
-            @SP            // x = MEM[--SP]
-            M=M-1
             @SP
-            A=M
-            D=M
-            @{temp0}       // Store x in temp0
-            M=D
-            @R13           // Switch on requested function.
-            D=M
-            @__UNARY_NEG
-            D;JEQ          // Jump to Neg
-                           // Fall through to Not
-            @{temp0}       // Load x
-            D=M
-            @{temp1}       // Store !x in temp1
-            M=!D
-            @__UNARY_RETURN_RESULT
-            0;JEQ
+            M=M+1       // SP++
+            """))
 
-            (__UNARY_NEG)
-            @{temp0}
-            D=M
-            @{temp1}       // Store -x in temp1
-            M=-D
-                           // Fall through to return result
-            (__UNARY_RETURN_RESULT)
-            @{temp1}
-            D=M
-            @SP            // MEM[SP++] = temp1
+    def cg_inline_arith(self, fn):
+        """
+        Generate code to do arithmetic on the stack.
+
+        Pop two values and push the result of the operation on them.
+        """
+        if fn == 'add':
+            op = '+'
+        elif fn == 'sub':
+            op = '-'
+        elif fn == 'and':
+            op = '&'
+        elif fn == 'or':
+            op = '|'
+        else:
+            raise ValueError(f"Unknown arithmetic function: {fn}")
+        self.asm(unindent(f"""
+            @SP
+            AM=M-1      // SP--
+            D=M         // D = MEM[SP]
+            @SP
+            AM=M-1      // SP--
+            D=M{op}D
+            @SP
             A=M
             M=D
             @SP
             M=M+1
-            @{temp7}       // Return
-            A=M
-            0;JMP
-            """)
-
-    def cg_arith(self):
-        """
-        Routine to perform addition or subtraction.
-
-        Args:
-        R13 ID for Add, Sub, And, or Or
-        R15 Return address
-
-        Stack:
-        y = pop
-        x = pop
-        push x fn y
-        """
-        if '__ARITHMETIC' in self.subs:
-            return
-        temp0 = self.config.temp_base
-        temp1 = self.config.temp_base + 1
-        temp7 = self.config.temp_base + 7
-        self.subs['__ARITHMETIC'] = unindent(f"""
-            // *** Subroutine: Binary operator arithmetic function ***
-            // a = pop; b = pop; d = a op b; push d
-            // Caller sets function in R13:
-            // R13 = ID of function (add, sub, and, or)
-            // R15 = return address
-            (__ARITHMETIC)
-            @R15
-            D=M
-            @{temp7}       // Store return address in temp7.
-            M=D
-            @R13
-            D=M
-            @{temp1}       // Store func choice in temp1.
-            M=D
-            @__ARITH_FN    // Push return address for get-xy.
-            D=A
-            @R15
-            M=D
-            @__GET_XY      // Get x and y.
-            0;JMP
-            (__ARITH_FN)   // Now R13=x, R14=y.
-
-            @{temp1}       // Switch on temp1 to find the right function.
-            D=M
-            @{ARG_ADD}
-            D=D-A
-            @__ARITH_ADD
-            D;JEQ          // goto Add
-
-            @{temp1}
-            D=M
-            @{ARG_SUB}
-            D=D-A
-            @__ARITH_SUB
-            D;JEQ          // goto Sub
-
-            @{temp1}
-            D=M
-            @{ARG_AND}
-            D=D-A
-            @__ARITH_AND
-            D;JEQ          // goto And
-                           // Else fall through to Or.
-            @R13           // x from get-xy
-            D=M
-            @R14           // y from get-xy
-            A=M
-            D=D|A
-            @{temp0}       // Store x|y in temp0.
-            M=D
-            @__ARITH_STORE_RESULT
-            0;JMP          // goto return result
-
-            (__ARITH_AND)
-            @R13           // x
-            D=M
-            @R14           // y
-            A=M
-            D=D&A
-            @{temp0}       // Store x&y in temp0.
-            M=D
-            @__ARITH_STORE_RESULT
-            0;JMP          // goto return result
-
-            (__ARITH_SUB)
-            @R13           // x
-            D=M
-            @R14           // y
-            A=M
-            D=D-A
-            @{temp0}       // Store x-y in temp0.
-            M=D
-            @__ARITH_STORE_RESULT
-            0;JMP          // goto return result
-
-            (__ARITH_ADD)
-            @R13           // x
-            D=M
-            @R14           // y
-            A=M
-            D=D+A
-            @{temp0}       // Store x+y in temp0.
-            M=D            // Fall through to store result.
-
-            (__ARITH_STORE_RESULT)
-            @{temp0}
-            D=M
-            @SP            // MEM[SP] = x+y
-            A=M
-            M=D
-            @SP
-            M=M+1          // SP++
-            @{temp7}       // Return
-            A=M
-            0;JMP
-            """)
-
-    def cg_cmp(self):
-        """
-        Routine to perform comparisons (lt, eq, gt).
-
-        Args:
-        R13 = ARG_LT for lt, ARG_EQ for eq, ARG_GT for gt
-        R15 = return address
-
-        Stack:
-        y = pop
-        x = pop
-        push x cmp y
-        """
-        if '__CMP' in self.subs:
-            return
-        temp0 = self.config.temp_base
-        temp1 = self.config.temp_base + 1
-        temp7 = self.config.temp_base + 7
-        self.subs['__CMP'] = unindent(f"""
-            // *** Subroutine: Compare ***
-            // y = pop; x = pop; if x cmp y push -1 else push 0
-            // Caller sets comparison function in R13:
-            // R13 = {ARG_LT} ==> lt
-            // R13 = {ARG_EQ} ==> eq
-            // R13 = {ARG_GT} ==> gt
-            // R15 = return address
-            (__CMP)
-            @R15
-            D=M
-            @{temp7}       // Store return address in temp7.
-            M=D
-            @R13
-            D=M
-            @{temp1}       // Store comparison function in temp1.
-            M=D
-            @__CMP_XY
-            D=A
-            @R15
-            M=D
-            @__GET_XY      // Get x and y from stack.
-            0;JEQ
-            (__CMP_XY)     // Now R13=x, R14=y
-
-            @{temp1}
-            D=M            // Which comparison function.
-            @{ARG_LT}
-            D=D-A
-            @__CMP_LT
-            D;JEQ          // Jump to compare lt?
-
-            @{temp1}
-            D=M
-            @{ARG_GT}
-            D=D-A
-            @__CMP_GT
-            D;JEQ          // Jump to compare gt?
-                           // Fall through to compare eq.
-            (__CMP_EQ)     // Compare: EQ
-            @R14
-            D=M            // D = y
-            @R13
-            D=M-D          // D = x - y
-            @__CMP_STORE_TRUE
-            D;JEQ          // If x - y = 0, then x = 0
-            @__CMP_STORE_FALSE
-            0;JMP
-
-            (__CMP_LT)     // Compare: x lt y?
-            @R14
-            D=M            // D = y
-            @R13
-            D=D-M          // D = y - x
-            @__CMP_STORE_TRUE
-            D;JGT          // If y - x > 0, then x < y
-            @__CMP_STORE_FALSE
-            0;JMP
-
-            (__CMP_GT)     // Compare: GT
-            @R14
-            D=M            // D = y
-            @R13
-            D=D-M          // D = y - x
-            @__CMP_STORE_TRUE
-            D;JLT          // If y - x < 0, then x > y
-
-            (__CMP_STORE_FALSE)
-            @{temp0}
-            M=0            // x not cmp y. Store 0 (false) in temp0.
-            @__CMP_RETURN_RESULT
-            0;JMP
-            (__CMP_STORE_TRUE)
-            @{temp0}
-            M=-1           // x cmp y. Store -1 (true) in temp0
-            (__CMP_RETURN_RESULT)
-            @{temp0}
-            D=M
-            @SP
-            A=M
-            M=D            // Push temp0 val on stack.
-            @SP
-            M=M+1
-            @{temp7}       // Return
-            A=M
-            0;JMP
-            """)
+            """))
 
     def cg_init(self):
         """

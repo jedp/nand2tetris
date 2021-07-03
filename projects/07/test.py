@@ -121,9 +121,13 @@ if __name__ == '__main__':
         print("Testing everyting")
 
     for vm_filepath in find_vm_files("."):
-        asm_filepath = vm2asm(vm_filepath)
-        if tests_list and (basename(asm_filepath) not in tests_list):
+        if tests_list and (basename(vm_filepath) not in tests_list):
             continue
 
-        test(asm_filepath, emulator_path)
+        try:
+            asm_filepath = vm2asm(vm_filepath)
+            test(asm_filepath, emulator_path)
+        except ValueError as err:
+            print(f"{C_RED}Error{C_RESET}  {vm_filepath}")
+            print(err)
 

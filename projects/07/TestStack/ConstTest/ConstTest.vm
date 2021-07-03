@@ -1,0 +1,4 @@
+push constant 42
+push constant 17
+add
+

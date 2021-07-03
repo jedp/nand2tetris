@@ -1,0 +1,8 @@
+push constant 42
+pop argument 0
+push constant 17
+pop argument 4
+push argument 0
+push argument 4
+sub
+
