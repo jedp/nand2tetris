@@ -14,14 +14,18 @@ Project files downloaded from www.nand2tetris.org
 Run on a filename, or use `HackAssembler.py test` to demonstrate that it
 assembles the source for `Sum1ToN.asm` on page 105 of the book.
 
-#### Chapter 7
+#### Chapters 7 and 8
 
-[VM2Hack.py](projects/07/VM2Hack.py) is a front-end for the
-[vm2hack](projects/07/vm2hack/) translator.  It converts Hack vm to asm.
+[VM2Hack.py](VM2Hack.py) is a front-end for the
+[vm2hack](vm2hack/) translator.  It converts Hack vm to asm.
 
-[test.py](projects/07/test.py) finds all the vm files in the current directory,
-or those specified by basename, translatest them to asm, and runs all the tests
-for them.
+[test.py](test.py) finds all the vm files under the `projects` directory,
+translates them to asm, and runs the tests that accompany them.
+
+Usage:
+- `./test.py` to translate all vm files run all tests in all projects.
+- `./test.py 07` to translate vm files and run all tests in project `07`.
+- `./test.py TestEq` to find and translate `TestEq.vm` and run `TestEq.tst`.
 
 (Should be easy to adapt to a different project by replacing the line `asm =
 Translator(vm_filepath).translate()` with whatever works for you.)

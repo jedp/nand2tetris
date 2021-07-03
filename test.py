@@ -112,17 +112,34 @@ def test(asm_filepath, emulator_path):
 
 
 if __name__ == '__main__':
-    emulator_path = os.path.join("../../tools", "CPUEmulator.sh")
+    """
+    Usage:
 
-    tests_list = sys.argv[1:]
-    if (tests_list):
-        print("Testing: " + ", ".join(tests_list))
+        ./test.py           Find and run all tests
+        ./test.py 07        Test only things with 07 in their path
+        ./test.py TestEq    Run test with basename TestEq
+    """
+    import re
+    emulator_path = os.path.join("tools", "CPUEmulator.sh")
+
+    match_list = sys.argv[1:]
+    if (match_list):
+        print("Testing: " + ", ".join(match_list))
     else:
         print("Testing everyting")
 
-    for vm_filepath in find_vm_files("."):
-        if tests_list and (basename(vm_filepath) not in tests_list):
-            continue
+    for vm_filepath in find_vm_files("projects"):
+        if match_list:
+            matches = False
+            if basename(vm_filepath) in match_list:
+                matches = True
+            else:
+                for part in re.split(r'\W', os.path.split(vm_filepath)[0]):
+                    if part in match_list:
+                        matches = True
+                        break
+            if not matches:
+                continue
 
         try:
             asm_filepath = vm2asm(vm_filepath)
