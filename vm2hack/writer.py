@@ -44,17 +44,32 @@ class Config:
             'that': 'THAT'
         }
 
+
 class CodeWriter:
     """
     Read Hack vm source and convert it to asm.
     """
+
+    _cg_push_D =unindent("""
+        @SP             // MEM[SP] = D
+        A=M
+        M=D
+        @SP             // SP++
+        M=M+1
+        """)
+
+    _cg_pop_D = unindent("""
+        @SP
+        AM=M-1          // SP--
+        D=M             // D = MEM[SP]
+        """)
 
     def __init__(self, vm_code, ns, config=Config()):
         self.input = Parser(vm_code).parse()
         self.config = config
         self.text = []
         self.ns = ns
-        self.current_function = None
+        self.function_name_stack = [None]
         self.next_static = 0
         self.next_label = 0
         self.static_offsets = {}
@@ -154,6 +169,21 @@ class CodeWriter:
 
         raise ValueError(f"Unhandled command: {cmd}")
 
+    def _cg_push_addr(self, reg, comment):
+        self.asm(unindent(f"""
+            @{reg}          // {comment}
+            D=A             // Address {reg}
+            {self._cg_push_D}
+            """))
+
+    def _cg_push_mem(self, reg, comment):
+        self.asm(unindent(f"""
+            @{reg}          // {comment}
+            D=M             // Contents of mem at addr {reg}
+            {self._cg_push_D}
+            """))
+
+
     def makeLabel(self, cmd):
         """
         Let foo be a function within the file Xxx.vm. The handling of each
@@ -163,11 +193,108 @@ class CodeWriter:
         When translating `goto bar` and `if-goto bar` commands (within foo)
         into assembly, the label Xxx.foo$bar must be used instead of bar.
         """
-        if self.current_function is not None:
-            prefix = self.ns + '.' + self.current_function
+        if self.function_name_stack[-1] is not None:
+            prefix = self.ns + '.' + self.function_name_stack[-1]
         else:
             prefix = self.ns
         return prefix + '$' + cmd.arg1
+
+    def cg_function(self, cmd):
+        """
+        Marks the beginning of a function named cmd.arg1.
+        The command has cmd.arg2 local variables.
+        """
+        self.function_name_stack.append(cmd.arg1)
+        funcAddress = self.makeLabel(cmd)
+        nvars = int(cmd.arg2)
+        self.asm(unindent(f"""
+            // Function {cmd.arg1} {cmd.arg2}
+            ({funcAddress})
+            """))
+        for i in range(nvars):
+            self._cg_push_addr(0, f"Init local{i} to 0")
+
+    def cg_call(self, cmd):
+        """
+        Calls the function named in cmd.arg1.
+        Indicates that cmd.arg2 args have been pushed onto the stack already.
+        """
+        nargs = int(cmd.arg2)
+        returnAddress = self.uniqueLabel()
+        funcAddress = self.makeLabel(cmd)
+        self._cg_push_addr(returnAddress, "Return address")
+        self._cg_push_mem("LCL", "Save caller's LCL")
+        self._cg_push_mem("ARG", "Save caller's ARG")
+        self._cg_push_mem("THIS", "Save caller's THIS")
+        self._cg_push_mem("THAT", "Save caller's THAT")
+        # Calculate ARG = SP - 5 - nargs
+        self._cg_push_mem("SP", "Current SP")
+        self._cg_push_addr("5", "Constant 5")
+        self.asm("sub       // SP - 5")
+        self._cg_push_addr(nargs, "Num Args")
+        self.asm("sub       // SP - 5 - nArgs")
+        self.asm(unindent(f"""
+            @{self._cg_pop_D}
+            @ARG
+            M=D             // Reposition ARG: SP - 5 - nargs
+            @SP
+            D=M
+            @LCL            // Reposition LCL: SP
+            M=D
+            @{funcAddress}
+            0;JEQ
+            ({returnAddress})
+            """))
+
+    def cg_return(self, cmd):
+        """
+        Transfers execution to the command just following the call command
+        in the code of the function that called the current function.
+        """
+        self.function_name_stack.pop()
+        temp = self.config.temp_base
+        # Reposition return value for caller
+        self.asm(unindent(f"""
+            {self._cg_pop_D}
+            @ARG
+            A=M
+            M=D             // *ARG = pop()
+            @ARG
+            D=M
+            D=D+1
+            @SP
+            M=D             // SP = ARG + 1
+            """))
+        # Store LCL in temp var and work backwards to restore state.
+        self.asm(unindent(f"""
+            @LCL
+            D=M
+            @{temp}
+            M=D             // temp0 = frame = LCL
+            """))
+        # THAT    = --temp (LCL - 1)
+        # THIS    = --temp (LCL - 2)
+        # ARG     = --temp (LCL - 3)
+        # LCL     = --temp (LCL - 4)
+        for reg in ['THAT', 'THIS', 'ARG', 'LCL']:
+            self.asm(unindent(f"""
+                @{temp}
+                M=M-1           // temp--
+                @{temp}
+                A=M
+                D=M
+                @{reg}
+                M=D             // {reg} = frame[temp]
+                """))
+        # retAddr = --temp (LCL - 5)
+        self.asm(unindent(f"""
+            @{temp}
+            M=M-1           // temp--
+            @{temp}
+            A=M
+            D=M
+            0;JEQ           // Jump to return address = frame - 5
+            """))
 
     def cg_label(self, cmd):
         """
@@ -212,15 +339,7 @@ class CodeWriter:
         Value must be positive, unsigned int between 0 and 32767.
         """
         assert(cmd.arg1 == 'constant')
-        self.asm(unindent(f"""
-            @{cmd.arg2}     // Constant {cmd.arg2}
-            D=A             // D = {cmd.arg2}
-            @SP             // MEM[SP] = D
-            A=M
-            M=D
-            @SP             // SP++
-            M=M+1
-            """))
+        self._cg_push_addr(cmd.arg2, f"Constant {cmd.arg2}")
 
     def cg_push_segment(self, cmd):
         """
@@ -257,9 +376,7 @@ class CodeWriter:
             D=D+A           // D = {cmd.arg1} {cmd.arg2}
             @R13
             M=D             // Stash address. R13 = D
-            @SP
-            AM=M-1          // SP--
-            D=M             // D = MEM[SP]
+            {self._cg_pop_D}
             @R13
             A=M             // A = {cmd.arg1} {cmd.arg2}
             M=D             // {cmd.arg1} {cmd.arg2} = D
@@ -271,15 +388,7 @@ class CodeWriter:
         """
         assert(cmd.arg1 == 'temp')
         addr = self.config.temp_base + int(cmd.arg2)
-        self.asm(unindent(f"""
-            @{addr}         // Temp base + offset {cmd.arg2}
-            D=M
-            @SP
-            A=M
-            M=D             // MEM[SP] = value at temp + offset {cmd.arg2}
-            @SP
-            M=M+1           // SP++
-            """))
+        self._cg_push_mem(addr, f"Temp base + offset {cmd.arg2}")
 
     def cg_pop_temp(self, cmd):
         """
@@ -288,9 +397,7 @@ class CodeWriter:
         assert(cmd.arg1 == 'temp')
         addr = self.config.temp_base + int(cmd.arg2)
         self.asm(unindent(f"""
-            @SP
-            AM=M-1          // SP--
-            D=M             // D = MEM[SP]
+            {self._cg_pop_D}
             @{addr}         // Temp base + offset {cmd.arg2}
             M=D             // Temp {cmd.arg2} = D
             """))
@@ -306,15 +413,7 @@ class CodeWriter:
             addr = self.config.that
         else:
             raise ValueError(f"Bad pointer for push: {cmd}")
-        self.asm(unindent(f"""
-            @{addr}         // Pointer {cmd.arg2} addr
-            D=M
-            @SP
-            A=M
-            M=D             // MEM[SP] = value at pointer {cmd.arg2}
-            @SP
-            M=M+1           // SP++
-            """))
+        self._cg_push_mem(addr, f"Pointer {cmd.arg2} addr")
 
     def cg_pop_pointer(self, cmd):
         """
@@ -328,9 +427,7 @@ class CodeWriter:
         else:
             raise ValueError(f"Bad pointer for pop: {cmd}")
         self.asm(unindent(f"""
-            @SP
-            AM=M-1          // SP--
-            D=M             // D = MEM[SP]
+            {self._cg_pop_D}
             @{addr}         // Pointer {cmd.arg2} addr
             M=D             // Pointer {cmd.arg2} = D
             """))
@@ -353,15 +450,7 @@ class CodeWriter:
         """
         assert(cmd.arg1 == 'static')
         addr = self.staticAddress(cmd.arg2)
-        self.asm(unindent(f"""
-            @{addr}         // Static addr {cmd.arg2} in {self.ns}
-            D=M
-            @SP
-            A=M
-            M=D             // MEM[SP] = value at static address {addr}
-            @SP
-            M=M+1           // SP++
-            """))
+        self._cg_push_mem(addr, f"Static addr {cmd.arg2} in {self.ns}")
 
     def cg_pop_static(self, cmd):
         """
@@ -370,9 +459,7 @@ class CodeWriter:
         assert(cmd.arg1 == 'static')
         addr = self.staticAddress(cmd.arg2)
         self.asm(unindent(f"""
-            @SP
-            AM=M-1          // SP--
-            D=M             // D = MEM[SP]
+            {self._cg_pop_D}
             @{addr}         // Static addr {cmd.arg2} in {self.ns}
             M=D             // Static = D
             """))
@@ -394,9 +481,7 @@ class CodeWriter:
         true_branch = self.uniqueLabel()
         store_result = self.uniqueLabel()
         self.asm(unindent(f"""
-            @SP
-            AM=M-1      // SP--
-            D=M         // D = MEM[SP]
+            {self._cg_pop_D}
             @SP
             AM=M-1      // SP--
             D=D-M
@@ -408,11 +493,7 @@ class CodeWriter:
             ({true_branch})
             D=-1        // Result = -1 (true)
             ({store_result})
-            @SP
-            A=M
-            M=D         // MEM[SP] = result
-            @SP
-            M=M+1       // SP++
+            {self._cg_push_D}
             """))
 
     def cg_inline_unary(self, fn):
@@ -429,11 +510,7 @@ class CodeWriter:
             @SP
             AM=M-1      // SP--
             D={op}M     // D = MEM[SP]
-            @SP
-            A=M
-            M=D
-            @SP
-            M=M+1       // SP++
+            {self._cg_push_D}
             """))
 
     def cg_inline_arith(self, fn):
@@ -453,9 +530,7 @@ class CodeWriter:
         else:
             raise ValueError(f"Unknown arithmetic function: {fn}")
         self.asm(unindent(f"""
-            @SP
-            AM=M-1      // SP--
-            D=M         // D = MEM[SP]
+            {self._cg_pop_D}
             @SP
             AM=M-1      // SP--
             D=M{op}D
@@ -473,10 +548,9 @@ class CodeWriter:
         """
         self.asm(unindent("""
             // SP = 0
-            @{}
-            D=A
-            @SP
-            M=D
+            //D=A
+            //@SP
+            //M=D
             """.format(self.config.stack_base)))
 
     def cg_stop(self):
