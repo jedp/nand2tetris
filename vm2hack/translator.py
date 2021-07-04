@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import os
-from vm2hack.codegen import CodeWriter
+from vm2hack.writer import CodeWriter
 
 class Translator:
     def __init__(self, fn):

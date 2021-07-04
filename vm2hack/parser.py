@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 
-from enum import Enum
 from collections import namedtuple
 
 C_ERROR = 'Error'
 C_ARITHMETIC = 'Arithmetic'
 C_PUSH = 'Push'
 C_POP = 'Pop'
+C_LABEL = 'Label'
+C_GOTO = 'Goto'
+C_IF_GOTO = 'If-Goto'
+C_FUNCTION = 'Function'
+C_CALL = 'Call'
+C_RETURN = 'Return'
 
 commands = {
     'add': C_ARITHMETIC,
@@ -19,7 +24,13 @@ commands = {
     'or': C_ARITHMETIC,
     'not': C_ARITHMETIC,
     'push': C_PUSH,
-    'pop': C_POP
+    'pop': C_POP,
+    'label': C_LABEL,
+    'goto': C_GOTO,
+    'if-goto': C_IF_GOTO,
+    'function': C_FUNCTION,
+    'call': C_CALL,
+    'return': C_RETURN
 }
 
 segments = (
@@ -77,13 +88,17 @@ class Parser:
             self.errs.append(Err(self.line, C_ERROR, "Bad command: {}".format(tokens[0])))
             return
         command = commands.get(tokens[0])
+
+        if command == C_RETURN:
+            self.cmds.append(self.makeCmd(command))
+            return
         # For arithmetic commands: arg1 is the name of the command.
         if command == C_ARITHMETIC:
             self.cmds.append(self.makeCmd(command, tokens[0]))
             return
 
-        if len(tokens) != 3:
-            self.errs.append(Err(self.line, C_ERROR, "Too few args for {}".format(tokens[0])))
+        if len(tokens) == 2:
+            self.cmds.append(self.makeCmd(command, tokens[1]))
             return
 
         self.cmds.append(self.makeCmd(command, tokens[1], tokens[2]))

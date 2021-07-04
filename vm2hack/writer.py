@@ -54,6 +54,7 @@ class CodeWriter:
         self.config = config
         self.text = []
         self.ns = ns
+        self.current_function = None
         self.next_static = 0
         self.next_label = 0
         self.static_offsets = {}
@@ -133,7 +134,76 @@ class CodeWriter:
             if cmd.arg1 == 'static':
                 return self.cg_pop_static(cmd)
 
+        if cmd.type == 'Label':
+            return self.cg_label(cmd)
+
+        if cmd.type == 'Goto':
+            return self.cg_goto(cmd)
+
+        if cmd.type == 'If-Goto':
+            return self.cg_if_goto(cmd)
+
+        if cmd.type == 'Function':
+           return self.cg_function(cmd)
+
+        if cmd.type == 'Call':
+           return self.cg_call(cmd)
+
+        if cmd.type == 'Return':
+           return self.cg_return(cmd)
+
         raise ValueError(f"Unhandled command: {cmd}")
+
+    def makeLabel(self, cmd):
+        """
+        Let foo be a function within the file Xxx.vm. The handling of each
+        `label bar` command within foo generates, and injects into the assembly
+        code stream, the symbol Xxx.foo$bar.
+
+        When translating `goto bar` and `if-goto bar` commands (within foo)
+        into assembly, the label Xxx.foo$bar must be used instead of bar.
+        """
+        if self.current_function is not None:
+            prefix = self.ns + '.' + self.current_function
+        else:
+            prefix = self.ns
+        return prefix + '$' + cmd.arg1
+
+    def cg_label(self, cmd):
+        """
+        Labels the current location in the function's code.
+        """
+        label = self.makeLabel(cmd)
+        self.asm(f"({label})")
+
+    def cg_goto(self, cmd):
+        """
+        Effects an unconditional goto operation, causing execution to continue
+        from the location marked by the label. The goto command and the labeled
+        jump destination must be located in the same function.
+        """
+        label = self.makeLabel(cmd)
+        self.asm(unindent(f"""
+            @{label}
+            0;JMP
+            """))
+
+    def cg_if_goto(self, cmd):
+        """
+        Effects a conditional goto operation. The stack's topmost value is
+        popped; if the value is not zero, execution continues from the location
+        marked by the label; otherwise, execution continues from the next
+        command in the program. The if-goto command and the labeled jump
+        destination must be located in the same function.
+        """
+        label = self.makeLabel(cmd)
+        self.asm(unindent(f"""
+            @SP
+            AM=M-1      // SP --
+            D=M         // D = MEM[SP]
+            @{label}
+            D;JNE       // if-goto {label}
+            """))
 
     def cg_push_constant(self, cmd):
         """
