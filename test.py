@@ -27,35 +27,33 @@ def basename(filepath):
     return os.path.splitext(os.path.split(filepath)[1])[0]
 
 
-def find_vm_files(root_dir):
+def find_vm_directories(root_dir):
     """
-    Find all Hack .vm files under root_dir.
+    Find all directories under root_dir that contain .vm files.
 
-    Return list of paths to .vm files.
+    Return list of paths to directories.
     """
-    vm_filepaths = []
+    vm_dirs = set()
     for root, dirs, files in os.walk(root_dir):
         for f in files:
             if f.endswith(".vm"):
-                vm_filepaths.append(os.path.join(root, f))
+                vm_dirs.add(root)
 
-    return vm_filepaths
+    return vm_dirs
 
 
-def vm2asm(vm_filepath):
+def vm2asm(vm_directory):
     """
-    Translate a Hack .vm file to .asm, overwriting any existing file.
+    Translate Hack vm files to asm, overwriting any existing file.
 
     Return path to new .asm file.
     """
-    filepath, fn = os.path.split(vm_filepath)
-    basename = os.path.splitext(fn)[0]
-    if not (filepath and fn and basename):
-        raise ValueError(f"Screwed up getting path info from: {vm_file}")
-    asm_file = basename + ".asm"
-    asm_filepath = os.path.join(filepath, asm_file)
+    basename = os.path.split(vm_directory)[1]
+    if not basename:
+        raise ValueError(f"Screwed up getting path info from: {vm_directory}")
+    asm_filepath = os.path.join(vm_directory, basename+'.asm')
 
-    asm = Translator(vm_filepath).translate()
+    asm = Translator(vm_directory).translate()
     with open(asm_filepath, 'w') as out:
         out.write(asm)
     # print(f"Translated: {vm_filepath} -> {asm_filepath}", file=sys.stderr)
@@ -128,21 +126,18 @@ if __name__ == '__main__':
     else:
         print("Testing everyting")
 
-    for vm_filepath in find_vm_files("projects"):
+    for vm_dir in find_vm_directories("projects"):
         if match_list:
             matches = False
-            if basename(vm_filepath) in match_list:
-                matches = True
-            else:
-                for part in re.split(r'\W', os.path.split(vm_filepath)[0]):
-                    if part in match_list:
-                        matches = True
-                        break
+            for part in re.split(r'\W', vm_dir):
+                if part in match_list:
+                    matches = True
+                    break
             if not matches:
                 continue
 
         try:
-            asm_filepath = vm2asm(vm_filepath)
+            asm_filepath = vm2asm(vm_dir)
             test(asm_filepath, emulator_path)
         except ValueError as err:
             print(f"{C_RED}Error{C_RESET}  {vm_filepath}")

@@ -1,5 +1,10 @@
+projects/07/**/*.asm
+projects/08/**/*.asm
+
 tools/
+
 *.out
 *.pyc
+
 .DS_Store
 

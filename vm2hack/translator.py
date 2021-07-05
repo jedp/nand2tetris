@@ -3,13 +3,32 @@
 import os
 from vm2hack.writer import CodeWriter
 
+
+def find_vm_files(dirpath):
+    """
+    Find all Hack .vm files under root_dir.
+
+    Return list of paths to .vm files.
+    """
+    vm_filepaths = []
+    for root, dirs, files in os.walk(dirpath):
+         for f in files:
+             if f.endswith(".vm"):
+                vm_filepaths.append(os.path.join(dirpath, f))
+
+    return vm_filepaths
+
+
 class Translator:
-    def __init__(self, fn):
-        self.fn = fn
+    def __init__(self, dirname):
+        self.dir = dirname
 
     def translate(self):
-        ns = os.path.split(self.fn)[-1].split('.')[0]
+        inputs = {}
+        for vm_filepath in find_vm_files(self.dir):
+            ns = os.path.split(vm_filepath)[-1].split('.')[0]
+            with open(vm_filepath, 'r') as src:
+                inputs[ns] = src.read()
 
-        with open(self.fn, 'r') as src:
-            return CodeWriter(src.read(), ns).genCode()
+        return CodeWriter(inputs).genCode()
 
