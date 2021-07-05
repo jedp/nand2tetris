@@ -52,10 +52,10 @@ class CodeWriter:
 
     _cg_push_D = unindent("""
         @SP             // MEM[SP] = D
-        A=M
+        AM=M
         M=D
         @SP             // SP++
-        M=M+1
+        AM=M+1
         """)
 
     _cg_pop_D = unindent("""
@@ -72,7 +72,6 @@ class CodeWriter:
         self.function_name_stack = [None]
         self.next_static = 0
         self.next_label = 0
-        self.static_offsets = {}
 
     def genCode(self):
         """
@@ -118,7 +117,7 @@ class CodeWriter:
         """
         Generate a unique label for jumps.
         """
-        label = f"$L{self.next_label}"
+        label = f"Label-{self.next_label}"
         self.next_label += 1
         return label
 
@@ -185,13 +184,6 @@ class CodeWriter:
             {self._cg_push_D}
             """))
 
-    def _cg_push_mem(self, reg, comment):
-        self.asm(unindent(f"""
-            @{reg}          // {comment}
-            D=M             // D = *({reg})
-            {self._cg_push_D}
-            """))
-
     def makeLabel(self, cmd):
         """
         Let foo be a function within the file Xxx.vm. The handling of each
@@ -202,10 +194,10 @@ class CodeWriter:
         into assembly, the label Xxx.foo$bar must be used instead of bar.
         """
         if cmd.type in ['Function', 'Call']:
-            return self.ns + ':' + cmd.arg1
+            return cmd.arg1
 
         if self.function_name_stack[-1] is not None:
-            prefix = self.ns + ':' + self.function_name_stack[-1]
+            prefix = self.function_name_stack[-1]
         else:
             prefix = self.ns
         return prefix + '$' + cmd.arg1
@@ -215,13 +207,15 @@ class CodeWriter:
         Initialize SP to 256 and call Sys.init.
         """
         self.asm(unindent("""
+            // Bootstrap sys
+            // Set SP=256; call Sys.init.
             @256
             D=A
             @SP
             M=D                 // SP = 256
             """))
-        self.asm("// Call Sys.init")
-        self._cg_function_call('Sys:Sys.init', 'STOP', '0')
+        self.asm("// call Sys.init 0")
+        self._cg_function_call('Sys.init', self.uniqueLabel(), '0')
 
     def cg_function(self, cmd):
         """
@@ -248,10 +242,14 @@ class CodeWriter:
         """
         self._cg_push_value(returnAddress, "Return address")
         for reg in ['LCL', 'ARG', 'THIS', 'THAT']:
-            self._cg_push_mem(reg, f"Save caller's {reg}")
+            self.asm(unindent(f"""
+            @{reg}          // Save caller's {reg}
+            D=M             // D = *({reg})
+            {self._cg_push_D}
+            """))
         # Calculate ARG = SP - nargs - 5
         self.asm(unindent(f"""
-            //@SP
+            @SP
             D=M             // D = SP
             @{nargs}
             D=D-A           // D = SP - nargs
@@ -285,14 +283,15 @@ class CodeWriter:
             @LCL            // Frame = LCL
             D=M
             @R13
-            M=D             // R13 = frame = LCL
+            M=D
+            @R13
+            D=M
             // Save return address in R14
             @5
-            D=D-A
-            A=D
+            A=D-A
             D=M             // D = *(frame - 5)
             @R14
-            M=D             // R14 = return address = *(frame - 5)
+            M=D             // Return address = *(frame - 5)
             // *ARG = pop()
             {self._cg_pop_D}
             @ARG
@@ -314,8 +313,7 @@ class CodeWriter:
                 @R13
                 D=M
                 @{i}
-                D=D-A
-                A=D
+                A=D-A
                 D=M
                 @{reg}          // {reg} = *(frame - {i})
                 M=D
@@ -408,69 +406,69 @@ class CodeWriter:
             M=D             // {cmd.arg1} {cmd.arg2} = D
             """))
 
+    def cg_push_fixed_segment(self, base, offset):
+        self.asm(unindent(f"""
+            @{base}         // Base fixed segment {base}
+            D=A
+            @{offset}
+            A=A+D
+            D=M
+            {self._cg_push_D}
+            """))
+
+    def cg_pop_fixed_segment(self, base, offset):
+        """
+        Pop and store in fixed segment + offset.
+        Uses R13 as temp space.
+        """
+        self.asm(unindent(f"""
+            @{base}         // Pop to fixed segment {base}
+            D=A
+            @{offset}       // Offset {offset}
+            D=A+D
+            @R13
+            M=D
+            {self._cg_pop_D}
+            @R13
+            A=M
+            M=D
+            """))
+
     def cg_push_temp(self, cmd):
         """
         Get from temp segment at offset and push onto stack.
         """
         assert(cmd.arg1 == 'temp')
-        addr = self.config.temp_base + int(cmd.arg2)
-        reg = f"{addr}"
-        self._cg_push_mem(reg, f"Temp base + offset {cmd.arg2}")
+        self.cg_push_fixed_segment(self.config.temp_base, cmd.arg2)
+        #self._cg_push_mem(reg, f"Temp base + offset {cmd.arg2}")
 
     def cg_pop_temp(self, cmd):
         """
         Pop and store at offset in temp segment.
         """
         assert(cmd.arg1 == 'temp')
-        addr = self.config.temp_base + int(cmd.arg2)
-        self.asm(unindent(f"""
-            {self._cg_pop_D}
-            @R{addr}        // Temp base + offset {cmd.arg2}
-            M=D             // Temp {cmd.arg2} = D
-            """))
+        self.cg_pop_fixed_segment(self.config.temp_base, cmd.arg2)
 
     def cg_push_pointer(self, cmd):
         """
         Push the address of pointer 0 or 1 on the stack.
         """
         assert(cmd.arg1 == 'pointer')
-        if cmd.arg2 == '0':
-            addr = self.config.this
-        elif cmd.arg2 == '1':
-            addr = self.config.that
-        else:
-            raise ValueError(f"Bad pointer for push: {cmd}")
-        reg = f"{addr}"
-        self._cg_push_mem(reg, f"Pointer {cmd.arg2} addr")
+        self.cg_push_fixed_segment('THIS', cmd.arg2)
 
     def cg_pop_pointer(self, cmd):
         """
         Pop a value and write it as the address of pointer 0 or 1.
         """
         assert(cmd.arg1 == 'pointer')
-        if cmd.arg2 == '0':
-            addr = self.config.this
-        elif cmd.arg2 == '1':
-            addr = self.config.that
-        else:
-            raise ValueError(f"Bad pointer for pop: {cmd}")
-        self.asm(unindent(f"""
-            {self._cg_pop_D}
-            @R{addr}        // Pointer {cmd.arg2} addr
-            M=D             // Pointer {cmd.arg2} = D
-            """))
+        self.cg_pop_fixed_segment('THIS', cmd.arg2)
 
     def staticAddress(self, arg):
         """
         Get a static variable offset for the given static arg.
         """
         label = self.ns + '.' + arg
-        if label not in self.static_offsets:
-            self.static_offsets[label] = self.next_static
-            self.next_static += 1
-        base = self.config.static_base
-        offset = self.static_offsets[label]
-        return base + offset
+        return label
 
     def cg_push_static(self, cmd):
         """
@@ -492,8 +490,8 @@ class CodeWriter:
         addr = self.staticAddress(cmd.arg2)
         self.asm(unindent(f"""
             {self._cg_pop_D}
-            @{addr}         // Static {self.ns}.{cmd.arg2} = {addr}
-            M=D             // Static = D
+            @{addr}
+            M=D             // Static {addr} = D
             """))
 
     def cg_inline_cmp(self, fn):
@@ -565,12 +563,9 @@ class CodeWriter:
             {self._cg_pop_D}
             @SP
             AM=M-1      // SP--
-            D=M{op}D
-            @SP
-            A=M
-            M=D
-            @SP
-            M=M+1
+            M=M{op}D    // D = MEM[SP] {op} D
+            @SP         // SP++
+            AM=M+1
             """))
 
     def cg_stop(self):
