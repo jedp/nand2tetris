@@ -51,17 +51,17 @@ class CodeWriter:
     """
 
     _cg_push_D = unindent("""
-        @SP             // MEM[SP] = D
+        @SP         // MEM[SP] = D
         AM=M
         M=D
-        @SP             // SP++
+        @SP         // SP++
         AM=M+1
         """)
 
     _cg_pop_D = unindent("""
         @SP
-        AM=M-1          // SP--
-        D=M             // D = MEM[SP]
+        AM=M-1      // SP--
+        D=M         // D = MEM[SP]
         """)
 
     def __init__(self, inputs, config=Config()):
@@ -94,15 +94,14 @@ class CodeWriter:
                 return f"// Encountered errors parsing {filename}"
 
             # Translate input.
-            self.asm(f"// *** Parsing input file '{ns}' ***")
+            self.asm(f"// Input file: {ns}")
             for cmd in input['commands']:
                 # Print original VM command as a comment.
                 self.asm('// ' + cmd.src)
                 self.cg(cmd)
-            self.asm(f"// *** End of input file '{ns}' ***")
+            self.asm(f"// End of input file: {ns}")
 
         # Add the stop loop.
-        self.asm("// *** STOP loop ***")
         self.cg_stop()
 
         return '\n'.join(self.text)
@@ -179,8 +178,8 @@ class CodeWriter:
 
     def _cg_push_value(self, uint, comment):
         self.asm(unindent(f"""
-            @{uint}         // {comment}
-            D=A             // D = {uint}
+            @{uint}
+            D=A         // D = {uint}; {comment}
             {self._cg_push_D}
             """))
 
@@ -212,7 +211,7 @@ class CodeWriter:
             @256
             D=A
             @SP
-            M=D                 // SP = 256
+            M=D         // SP = 256
             """))
         self.asm("// call Sys.init 0")
         self._cg_function_call('Sys.init', self.uniqueLabel(), '0')
@@ -225,12 +224,10 @@ class CodeWriter:
         self.current_function_name = cmd.arg1
         funcAddress = self.makeLabel(cmd)
         nvars = int(cmd.arg2)
-        self.asm(unindent(f"""
-            ({funcAddress})         // Label for func {cmd.arg1}
-            """))
+        self.asm(f"({funcAddress})")
         for i in range(nvars):
             self.asm(unindent(f"""
-                @0                  // Init arg{i} = 0
+                @0          // Init arg{i} = 0
                 D=A
                 {self._cg_push_D}
                 """))
@@ -243,23 +240,23 @@ class CodeWriter:
         self._cg_push_value(returnAddress, "Return address")
         for reg in ['LCL', 'ARG', 'THIS', 'THAT']:
             self.asm(unindent(f"""
-            @{reg}          // Save caller's {reg}
-            D=M             // D = *({reg})
+            @{reg}
+            D=M         // D = *({reg})
             {self._cg_push_D}
             """))
         # Calculate ARG = SP - nargs - 5
         self.asm(unindent(f"""
             @SP
-            D=M             // D = SP
+            D=M         // D = SP
             @{nargs}
-            D=D-A           // D = SP - nargs
+            D=D-A       // D = SP - nargs
             @5
-            D=D-A           // D = SP - nargs - 5
+            D=D-A       // D = SP - nargs - 5
             @ARG
-            M=D             // Reposition ARG: ARG = SP - nargs - 5
+            M=D         // Reposition ARG: ARG = SP - nargs - 5
             @SP
             D=M
-            @LCL            // Reposition LCL: LCL = SP
+            @LCL        // Reposition LCL: LCL = SP
             M=D
             @{funcAddress}
             0;JMP
@@ -279,7 +276,7 @@ class CodeWriter:
         """
         self.asm(unindent(f"""
             // Save frame in R13
-            @LCL            // Frame = LCL
+            @LCL        // Frame = LCL
             D=M
             @R13
             M=D
@@ -288,19 +285,19 @@ class CodeWriter:
             // Save return address in R14
             @5
             A=D-A
-            D=M             // D = *(frame - 5)
+            D=M         // D = *(frame - 5)
             @R14
-            M=D             // Return address = *(frame - 5)
+            M=D         // Return address = *(frame - 5)
             // *ARG = pop()
             {self._cg_pop_D}
             @ARG
             A=M
-            M=D             // *ARG = pop()
+            M=D         // *ARG = pop()
             // SP = ARG + 1
             @ARG
             D=M+1
             @SP
-            M=D             // SP = ARG + 1
+            M=D         // SP = ARG + 1
             """))
         # THAT    = *(frame - 1)
         # THIS    = *(frame - 2)
@@ -314,13 +311,13 @@ class CodeWriter:
                 @{i}
                 A=D-A
                 D=M
-                @{reg}          // {reg} = *(frame - {i})
-                M=D
+                @{reg}
+                M=D         // {reg} = *(frame - {i})
                 """))
         self.asm(unindent(f"""
             @R14
             A=M
-            0;JMP           // Jump to return address = *(frame - 5)
+            0;JMP       // goto return address, *(frame - 5)
             """))
 
     def cg_label(self, cmd):
@@ -376,11 +373,11 @@ class CodeWriter:
         base_ptr = self.config.segments[cmd.arg1]
         offset = int(cmd.arg2)
         self.asm(unindent(f"""
-            @{base_ptr}     // {cmd.arg1} base ptr: {base_ptr}
-            D=M
-            @{offset}       // offset: {offset}
-            A=D+A           // A = addr of {cmd.arg1} {cmd.arg2}
-            D=M             // D = *(addr)
+            @{base_ptr}
+            D=M         // {cmd.arg1} base ptr: {base_ptr}
+            @{offset}
+            A=D+A       // base {base_ptr} + offset {offset}
+            D=M         // D = *(addr)
             {self._cg_push_D}
             """))
 
@@ -393,24 +390,24 @@ class CodeWriter:
         offset = int(cmd.arg2)
         self.asm(unindent(f"""
             // Pop addr {base_ptr} + {cmd.arg2}
-            @{base_ptr}     // Base segment {cmd.arg1}
-            D=M
-            @{offset}       // Offset {cmd.arg2}
-            D=D+A           // base + offset
+            @{base_ptr}
+            D=M         // Base segment {cmd.arg1}
+            @{offset}
+            D=D+A       // Base {base_ptr} + offset {cmd.arg2}
             @R13
-            M=D             // R13 = base + offset
+            M=D         // R13 = base + offset
             {self._cg_pop_D}
             @R13
-            A=M             // A = {cmd.arg1} {cmd.arg2}
-            M=D             // {cmd.arg1} {cmd.arg2} = D
+            A=M         // A = {cmd.arg1} {cmd.arg2}
+            M=D         // {cmd.arg1} {cmd.arg2} = D
             """))
 
     def cg_push_fixed_segment(self, base, offset):
         self.asm(unindent(f"""
-            @{base}         // Base fixed segment {base}
-            D=A
+            @{base}
+            D=A         // Base fixed segment {base}
             @{offset}
-            A=A+D
+            A=A+D       // Base {base} + offset {offset}
             D=M
             {self._cg_push_D}
             """))
@@ -421,16 +418,16 @@ class CodeWriter:
         Uses R13 as temp space.
         """
         self.asm(unindent(f"""
-            @{base}         // Pop to fixed segment {base}
-            D=A
-            @{offset}       // Offset {offset}
-            D=A+D
+            @{base}
+            D=A         // Fixed segment {base}
+            @{offset}
+            D=A+D       // Base {base} + offset {offset}
             @R13
             M=D
             {self._cg_pop_D}
             @R13
             A=M
-            M=D
+            M=D         // Pop and store in fixed segment base {base} + {offset}
             """))
 
     def cg_push_temp(self, cmd):
@@ -490,7 +487,7 @@ class CodeWriter:
         self.asm(unindent(f"""
             {self._cg_pop_D}
             @{addr}
-            M=D             // Static {addr} = D
+            M=D         // Static {addr} = D
             """))
 
     def cg_inline_cmp(self, fn):
@@ -543,7 +540,7 @@ class CodeWriter:
         self.asm(unindent(f"""
             @SP
             AM=M-1      // SP--
-            D={op}M     // D = MEM[SP]
+            D={op}M        // D = MEM[SP]
             {self._cg_push_D}
             """))
 
@@ -567,7 +564,7 @@ class CodeWriter:
             {self._cg_pop_D}
             @SP
             AM=M-1      // SP--
-            M=M{op}D    // D = MEM[SP] {op} D
+            M=M{op}D       // D = MEM[SP] {op} D
             @SP         // SP++
             AM=M+1
             """))
