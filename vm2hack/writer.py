@@ -69,7 +69,7 @@ class CodeWriter:
         self.ns = None
         self.config = config
         self.text = []
-        self.function_name_stack = [None]
+        self.current_function_name = None
         self.next_static = 0
         self.next_label = 0
 
@@ -196,8 +196,8 @@ class CodeWriter:
         if cmd.type in ['Function', 'Call']:
             return cmd.arg1
 
-        if self.function_name_stack[-1] is not None:
-            prefix = self.function_name_stack[-1]
+        if self.current_function_name is not None:
+             prefix = self.current_function_name
         else:
             prefix = self.ns
         return prefix + '$' + cmd.arg1
@@ -222,7 +222,7 @@ class CodeWriter:
         Marks the beginning of a function named cmd.arg1.
         The command has cmd.arg2 local variables.
         """
-        self.function_name_stack.append(cmd.arg1)
+        self.current_function_name = cmd.arg1
         funcAddress = self.makeLabel(cmd)
         nvars = int(cmd.arg2)
         self.asm(unindent(f"""
@@ -277,7 +277,6 @@ class CodeWriter:
         Transfers execution to the command just following the call command
         in the code of the function that called the current function.
         """
-        self.function_name_stack.pop()
         self.asm(unindent(f"""
             // Save frame in R13
             @LCL            // Frame = LCL
@@ -501,29 +500,34 @@ class CodeWriter:
         True is -1, false is 0.
         """
         if fn == 'lt':
-            jmp = 'JGT'
+            jmp = 'JLT'
         elif fn == 'eq':
             jmp = 'JEQ'
         elif fn == 'gt':
-            jmp = 'JLT'
+            jmp = 'JGT'
         else:
             raise ValueError(f"Unknown cmp function: {fn}")
-        true_branch = self.uniqueLabel()
-        store_result = self.uniqueLabel()
+        true_branch = self.uniqueLabel() + '-cmp-' + fn
+        done = self.uniqueLabel() + '-cmp-done'
         self.asm(unindent(f"""
             {self._cg_pop_D}
             @SP
             AM=M-1      // SP--
-            D=D-M
+            D=M-D
             @{true_branch}
             D;{jmp}     // Comparing x {fn} y, so x-y;{jmp}
-            D=0         // Result = 0 (false)
-            @{store_result}
+            @SP
+            AM=M
+            M=0         // !{fn}: MEM[SP] = 0 (false)
+            @{done}
             0;JMP
             ({true_branch})
-            D=-1        // Result = -1 (true)
-            ({store_result})
-            {self._cg_push_D}
+            @SP
+            AM=M
+            M=-1        // {fn}: MEM[SP] = -1 (true)
+            ({done})
+            @SP
+            AM=M+1      // SP++
             """))
 
     def cg_inline_unary(self, fn):
